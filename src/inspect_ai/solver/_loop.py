@@ -3,7 +3,6 @@ from typing import Callable
 from ._chain import Chain
 from ._solver import Generate, Solver
 from ._task_state import TaskState
-from ._transcript import solver_transcript
 
 
 def loop(
@@ -24,10 +23,10 @@ def loop(
     Returns:
         A solver that implements the looping behavior.
     """
-    return Loop(solver=solver, condition=condition, max_iterations=max_iterations)
+    return Loop([solver] * max_iterations, condition)
 
 
-class Loop(Solver):
+class Loop(Chain):
     """A solver that repeatedly applies another solver until a condition is met.
 
     Args:
@@ -38,31 +37,28 @@ class Loop(Solver):
 
     def __init__(
         self,
-        *,
-        solver: Solver,
+        solvers: list[Solver],
         condition: Callable[[TaskState], bool] | None = None,
-        max_iterations: int = 10,
     ) -> None:
-        self._solver = solver
+        self._solvers = solvers
         self._condition = condition
-        self._max_iterations = max_iterations
 
-    async def __call__(self, state: TaskState, generate: Generate) -> TaskState:
-        # Helper to decide if we should exit early
-        def should_exit(state: TaskState) -> bool:
-            return (
-                self._condition is not None and self._condition(state)
-            ) or state.completed
+    async def __call__(
+        self,
+        state: TaskState,
+        generate: Generate,
+    ) -> TaskState:
+        from ._transcript import solver_transcript
 
-        iteration = 0
-        while iteration < self._max_iterations and not should_exit(state):
-            if not isinstance(self._solver, Chain):
-                with solver_transcript(self._solver, state) as st:
-                    state = await self._solver(state, generate)
-                    st.complete(state)
-            else:
-                state = await self._solver(state, generate)
-
-            iteration += 1
+        for solver in self._solvers:
+            with solver_transcript(solver, state, "loop") as st:
+                state = await solver(state, generate)
+                st.complete(state)
+            if (
+                self._condition is not None
+                and self._condition(state)
+                or state.completed
+            ):
+                break
 
         return state
