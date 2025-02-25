@@ -32,6 +32,28 @@ def complete_immediately() -> Solver:
     return solve
 
 
+@solver
+def check_counter_three() -> Solver:
+    """A condition solver that completes when counter >= 3."""
+
+    async def solve(state: TaskState, _generate: Generate) -> TaskState:
+        if state.store.get("counter", 0) >= 3:
+            state.completed = True
+        return state
+
+    return solve
+
+
+@solver
+def never_complete() -> Solver:
+    """A condition solver that never completes."""
+
+    async def solve(state: TaskState, _generate: Generate) -> TaskState:
+        return state
+
+    return solve
+
+
 @task
 def loop_condition_task() -> Task:
     """Test that the loop stops once the counter in the state store reaches 3."""
@@ -42,7 +64,7 @@ def loop_condition_task() -> Task:
             # Create a loop solver that runs 'increase_counter'
             loop_solver_instance = loop(
                 solver=increase_counter(),
-                condition=lambda s: s.store.get("counter", 0) >= 3,
+                condition=check_counter_three(),
                 max_iterations=10,
             )
             state = await loop_solver_instance(state, generate)
@@ -69,7 +91,7 @@ def loop_max_iterations_task() -> Task:
         async def solve(state: TaskState, generate: Generate) -> TaskState:
             loop_solver_instance = loop(
                 solver=increase_counter(),
-                condition=lambda s: False,  # Never stops early.
+                condition=never_complete(),  # Never stops early
                 max_iterations=5,
             )
             state = await loop_solver_instance(state, generate)
@@ -95,7 +117,7 @@ def loop_completion_task() -> Task:
         async def solve(state: TaskState, generate: Generate) -> TaskState:
             loop_solver_instance = loop(
                 solver=complete_immediately(),
-                condition=lambda s: False,  # Condition not used since .completed wins.
+                condition=never_complete(),  # Condition not used since .completed wins
                 max_iterations=10,
             )
             state = await loop_solver_instance(state, generate)
@@ -120,11 +142,11 @@ def loop_evaluation_task() -> Task:
     @solver
     def loop_solver() -> Solver:
         async def solve(state: TaskState, generate: Generate) -> TaskState:
-            # Although the condition is always False, complete_immediately() marks the state as completed,
+            # Although the condition solver never completes, complete_immediately() marks the state as completed,
             # so the loop should exit immediately after one iteration.
             loop_solver_instance = loop(
                 solver=complete_immediately(),
-                condition=lambda s: False,
+                condition=never_complete(),
                 max_iterations=3,
             )
             state = await loop_solver_instance(state, generate)
@@ -144,16 +166,7 @@ def loop_evaluation_task() -> Task:
 
 @task
 def chain_loop_task() -> Task:
-    """Test that chaining a loop solver works as expected.
-
-    e.g. chain(
-        loop(
-            solver=complete_immediately(),
-            condition=lambda s: False,
-            max_iterations=3,
-        )
-    )
-    """
+    """Test that chaining a loop solver works as expected."""
 
     @solver
     def chain_solver() -> Solver:
@@ -162,7 +175,7 @@ def chain_loop_task() -> Task:
             chained_solver = chain(
                 loop(
                     solver=complete_immediately(),
-                    condition=lambda s: False,
+                    condition=never_complete(),
                     max_iterations=3,
                 )
             )
@@ -193,7 +206,7 @@ def chain_of_solvers_task() -> Task:
                 increase_counter(),
                 loop(
                     solver=increase_counter(),
-                    condition=lambda s: s.store.get("counter", 0) >= 3,
+                    condition=check_counter_three(),
                     max_iterations=5,
                 ),
             )
@@ -221,7 +234,7 @@ def direct_loop_task() -> Task:
     Test that a solver defined directly from loop() is passable to eval().
 
     Uses a loop on complete_immediately(), where the loop should exit immediately
-    due to the state.completed flag, even though the condition is always False.
+    due to the state.completed flag, even though the condition never completes.
 
     Expected: counter is incremented exactly once.
     """
@@ -229,7 +242,7 @@ def direct_loop_task() -> Task:
         dataset=[Sample(input="dummy", target="dummy")],
         solver=loop(
             solver=complete_immediately(),
-            condition=lambda s: False,
+            condition=never_complete(),
             max_iterations=3,
         ),
     )
@@ -270,7 +283,7 @@ def direct_chain_loop_task() -> Task:
             increase_counter(),
             loop(
                 solver=increase_counter(),
-                condition=lambda s: s.store.get("counter", 0) >= 3,
+                condition=check_counter_three(),
                 max_iterations=5,
             ),
         ),
