@@ -53,9 +53,9 @@ class Loop(Solver):
     async def __call__(self, state: TaskState, generate: Generate) -> TaskState:
         from ._transcript import solver_transcript
 
-        for _ in range(self._max_iterations):
+        for i in range(self._max_iterations):
             # Run the main solver
-            with solver_transcript(self._solver, state, "loop") as st:
+            with solver_transcript(self._solver, state, f"loop_{i}") as st:
                 state = await self._solver(state, generate)
                 st.complete(state)
 
