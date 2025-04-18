@@ -1,5 +1,6 @@
 import clsx from "clsx";
-import { ApplicationIcons } from "../appearance/icons";
+import { FC, ReactNode } from "react";
+import { ApplicationIcons } from "../app/appearance/icons";
 import "./Card.css";
 
 interface CardHeaderProps {
@@ -7,17 +8,19 @@ interface CardHeaderProps {
   icon?: string;
   label?: string;
   className?: string;
-  children?: React.ReactNode;
+  children?: ReactNode;
 }
 
 interface CardBodyProps {
   id?: string;
-  children?: React.ReactNode;
+  children?: ReactNode;
+  className?: string | string[];
 }
 
 interface CardProps {
   id?: string;
-  children?: React.ReactNode;
+  children?: ReactNode;
+  className?: string | string[];
 }
 
 interface CardCollapsingHeaderProps {
@@ -25,10 +28,10 @@ interface CardCollapsingHeaderProps {
   icon: string;
   label: string;
   cardBodyId: string;
-  children?: React.ReactNode;
+  children?: ReactNode;
 }
 
-export const CardHeader: React.FC<CardHeaderProps> = ({
+export const CardHeader: FC<CardHeaderProps> = ({
   id,
   icon,
   label,
@@ -50,23 +53,23 @@ export const CardHeader: React.FC<CardHeaderProps> = ({
   );
 };
 
-export const CardBody: React.FC<CardBodyProps> = ({ id, children }) => {
+export const CardBody: FC<CardBodyProps> = ({ id, children, className }) => {
   return (
-    <div className={"card-body"} id={id || ""}>
+    <div className={clsx("card-body", className)} id={id || ""}>
       {children}
     </div>
   );
 };
 
-export const Card: React.FC<CardProps> = ({ id, children }) => {
+export const Card: FC<CardProps> = ({ id, children, className }) => {
   return (
-    <div className={"card"} id={id}>
+    <div className={clsx("card", className)} id={id}>
       {children}
     </div>
   );
 };
 
-export const CardCollapsingHeader: React.FC<CardCollapsingHeaderProps> = ({
+export const CardCollapsingHeader: FC<CardCollapsingHeaderProps> = ({
   id,
   icon,
   label,

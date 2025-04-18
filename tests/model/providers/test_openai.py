@@ -1,6 +1,7 @@
 import pytest
 from test_helpers.utils import skip_if_no_openai
 
+from inspect_ai import Task, eval
 from inspect_ai.model import (
     ChatMessageUser,
     GenerateConfig,
@@ -9,7 +10,7 @@ from inspect_ai.model import (
 from inspect_ai.model._chat_message import ChatMessageSystem
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 @skip_if_no_openai
 async def test_openai_api() -> None:
     model = get_model(
@@ -31,7 +32,7 @@ async def test_openai_api() -> None:
     assert len(response.completion) >= 1
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 @skip_if_no_openai
 async def test_openai_o_series_developer_messages() -> None:
     async def check_developer_messages(model_name: str):
@@ -51,7 +52,7 @@ async def test_openai_o_series_developer_messages() -> None:
     await check_developer_messages("openai/o3-mini")
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 @skip_if_no_openai
 async def test_openai_o_series_reasoning_effort() -> None:
     async def check_reasoning_effort(model_name: str):
@@ -69,7 +70,7 @@ async def test_openai_o_series_reasoning_effort() -> None:
     await check_reasoning_effort("openai/o3-mini")
 
 
-@pytest.mark.asyncio
+@pytest.mark.anyio
 @skip_if_no_openai
 async def test_openai_o_series_max_tokens() -> None:
     async def check_max_tokens(model_name: str):
@@ -84,3 +85,24 @@ async def test_openai_o_series_max_tokens() -> None:
     await check_max_tokens("openai/o1")
     await check_max_tokens("openai/o1-mini")
     await check_max_tokens("openai/o3-mini")
+
+
+@skip_if_no_openai
+def test_openai_flex_requests():
+    log = eval(
+        Task(),
+        model="openai/o4-mini",
+        model_args=dict(service_tier="flex", client_timeout=1200),
+    )[0]
+    assert log.status == "success"
+
+
+@skip_if_no_openai
+def test_openai_flex_requests_not_available():
+    log = eval(
+        Task(),
+        model="openai/gpt-4o",
+        model_args=dict(service_tier="flex", client_timeout=1200),
+    )[0]
+    assert log.status == "error"
+    assert "Flex is not available for this model" in str(log.error)

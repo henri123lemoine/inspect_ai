@@ -18,6 +18,7 @@ title: "inspect_ai.util"
 
 ## Display
 
+### display_counter
 ### display_type
 ### DisplayType
 ### input_screen
@@ -34,11 +35,23 @@ title: "inspect_ai.util"
 ### trace_action
 ### trace_message
 
+
 ## Sandbox
 
 ### sandbox
 ### sandbox_with
+### sandbox_default
 ### SandboxEnvironment
 ### SandboxConnection
 ### sandboxenv
 
+## Registry
+
+### registry_create
+### RegistryType
+
+## JSON
+
+### JSONType
+### JSONSchema
+### json_schema

@@ -1,4 +1,3 @@
-import asyncio
 import contextlib
 import importlib.util
 import os
@@ -10,9 +9,11 @@ from random import random
 from types import FrameType
 from typing import Generator, Sequence
 
+import anyio
 import pytest
 
 from inspect_ai import Task, eval, task
+from inspect_ai._util._async import configured_async_backend
 from inspect_ai.dataset import Sample
 from inspect_ai.model import ChatMessage, ModelName, ModelOutput
 from inspect_ai.scorer import match
@@ -37,15 +38,23 @@ def skip_if_no_groq(func):
     return pytest.mark.api(skip_if_env_var("GROQ_API_KEY", exists=False)(func))
 
 
-def skip_if_no_goodfire(func):
-    return pytest.mark.api(skip_if_env_var("GOODFIRE_API_KEY", exists=False)(func))
-
-
 def skip_if_no_package(package):
     return pytest.mark.skipif(
         importlib.util.find_spec(package) is None,
         reason=f"Test doesn't work without package {package} installed",
     )
+
+
+def skip_if_no_mcp_package(func):
+    return skip_if_no_package("mcp")(func)
+
+
+def skip_if_no_mcp_fetch_package(func):
+    return skip_if_no_package("mcp_server_fetch")(func)
+
+
+def skip_if_no_mcp_git_package(func):
+    return skip_if_no_package("mcp_server_git")(func)
 
 
 def skip_if_no_vllm(func):
@@ -70,8 +79,23 @@ def skip_if_no_openai(func):
     )
 
 
+def skip_if_no_openai_azure(func):
+    return pytest.mark.skipif(
+        importlib.util.find_spec("openai") is None
+        or os.environ.get("AZUREAI_OPENAI_API_KEY") is None
+        or os.environ.get("AZUREAI_OPENAI_BASE_URL") is None,
+        reason="Test requires both OpenAI package and AZUREAI_OPENAI_API_KEY and AZUREAI_OPENAI_BASE_URL environment variables",
+    )(func)
+
+
 def skip_if_no_openai_package(func):
     return skip_if_no_package("openai")(func)
+
+
+def skip_if_no_openai_reasoning_summaries(func):
+    return pytest.mark.api(
+        skip_if_env_var("ENABLE_OPENAI_REASONING_SUMMARIES", exists=False)(func)
+    )
 
 
 def skip_if_no_anthropic(func):
@@ -86,16 +110,24 @@ def skip_if_no_mistral(func):
     return pytest.mark.api(skip_if_env_var("MISTRAL_API_KEY", exists=False)(func))
 
 
+def skip_if_no_mistral_package(func):
+    return skip_if_no_package("mistralai")(func)
+
+
 def skip_if_no_grok(func):
     return pytest.mark.api(skip_if_env_var("GROK_API_KEY", exists=False)(func))
 
 
 def skip_if_no_cloudflare(func):
-    return pytest.mark.api(skip_if_env_var("CLOUDFLARE_API_TOKEN", exists=False)(func))
+    return pytest.mark.api(skip_if_env_var("CLOUDFLARE_API_KEY", exists=False)(func))
 
 
 def skip_if_no_together(func):
     return pytest.mark.api(skip_if_env_var("TOGETHER_API_KEY", exists=False)(func))
+
+
+def skip_if_no_together_base_url(func):
+    return pytest.mark.api(skip_if_env_var("TOGETHER_BASE_URL", exists=False)(func))
 
 
 def skip_if_no_azureai(func):
@@ -106,6 +138,10 @@ def skip_if_no_llama_cpp_python(func):
     return pytest.mark.api(
         skip_if_env_var("ENABLE_LLAMA_CPP_PYTHON_TESTS", exists=False)(func)
     )
+
+
+def skip_if_no_bedrock(func):
+    return pytest.mark.api(skip_if_env_var("ENABLE_BEDROCK_TESTS", exists=False)(func))
 
 
 def skip_if_no_vertex(func):
@@ -133,6 +169,21 @@ def skip_if_no_docker(func):
     return pytest.mark.skipif(
         not is_docker_installed, reason="Test doesn't work without Docker installed."
     )(func)
+
+
+def skip_if_async_backend(backend):
+    return pytest.mark.skipif(
+        configured_async_backend() == backend,
+        reason=f"Test not compatible with {backend} async backend.",
+    )
+
+
+def skip_if_trio(func):
+    return skip_if_async_backend("trio")(func)
+
+
+def skip_if_asyncio(func):
+    return skip_if_async_backend("asyncio")(func)
 
 
 def run_example(example: str, model: str):
@@ -164,7 +215,7 @@ def simple_task_state(
 def file_check(file: str):
     async def solve(state: TaskState, generate: Generate):
         if not Path(file).exists():
-            raise ValueError(f"File {file} does not exist.")
+            raise FileNotFoundError(f"File {file} does not exist.")
 
         return state
 
@@ -223,7 +274,15 @@ def failing_task_deterministic(should_fail: Sequence[bool]) -> Task:
 @solver
 def sleep_for_solver(seconds: int):
     async def solve(state: TaskState, generate: Generate):
-        await asyncio.sleep(seconds)
+        await anyio.sleep(seconds)
+        return state
+
+    return solve
+
+
+@solver
+def identity_solver():
+    async def solve(state: TaskState, generate: Generate):
         return state
 
     return solve

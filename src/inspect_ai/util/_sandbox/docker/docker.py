@@ -5,7 +5,7 @@ import os
 import tempfile
 from logging import getLogger
 from pathlib import Path, PurePosixPath
-from typing import Literal, Union, cast, overload
+from typing import Literal, Union, overload
 
 from typing_extensions import override
 
@@ -30,6 +30,7 @@ from .cleanup import (
     project_cleanup,
     project_cleanup_shutdown,
     project_cleanup_startup,
+    project_record_auto_compose,
     project_startup,
 )
 from .compose import (
@@ -77,6 +78,9 @@ class DockerSandboxEnvironment(SandboxEnvironment):
             project = await ComposeProject.create(
                 name=task_project_name(task_name), config=config
             )
+
+            # record auto compose
+            project_record_auto_compose(project)
 
             # build containers which are out of date
             await compose_build(project)
@@ -139,8 +143,15 @@ class DockerSandboxEnvironment(SandboxEnvironment):
                     env[key] = str(value)
 
         # create project
+        from inspect_ai.log._samples import sample_active
+
+        sample = sample_active()
         project = await ComposeProject.create(
-            name=task_project_name(task_name), config=config, env=env
+            name=task_project_name(task_name),
+            config=config,
+            sample_id=sample.sample.id if sample is not None else None,
+            epoch=sample.epoch if sample is not None else None,
+            env=env,
         )
 
         try:
@@ -148,12 +159,17 @@ class DockerSandboxEnvironment(SandboxEnvironment):
             services = await compose_services(project)
 
             # start the services
-            await compose_up(project, services)
+            result = await compose_up(project, services)
 
             # check to ensure that the services are running
             running_services = await compose_check_running(
                 list(services.keys()), project=project
             )
+
+            if not running_services:
+                raise RuntimeError(
+                    f"No services started.\nCompose up stderr: {result.stderr}"
+                )
 
             # note that the project is running
             project_startup(project)
@@ -209,9 +225,11 @@ class DockerSandboxEnvironment(SandboxEnvironment):
         # (this enables us to show output for the cleanup operation)
         if not interrupted:
             # extract project from first environment
-            project = cast(
-                DockerSandboxEnvironment, next(iter(environments.values()))
-            )._project
+            project = (
+                next(iter(environments.values()))
+                .as_type(DockerSandboxEnvironment)
+                ._project
+            )
             # cleanup the project
             await project_cleanup(project=project, quiet=True)
 
@@ -279,6 +297,9 @@ class DockerSandboxEnvironment(SandboxEnvironment):
 
     @override
     async def write_file(self, file: str, contents: str | bytes) -> None:
+        # defualt timeout for write_file operations
+        TIMEOUT = 180
+
         # resolve relative file paths
         file = self.container_file(file)
 
@@ -293,8 +314,16 @@ class DockerSandboxEnvironment(SandboxEnvironment):
         # write the file
         if isinstance(contents, str):
             result = await self.exec(
-                ["sh", "-e", "-c", 'tee -- "$1"', "write_file_script", file],
+                [
+                    "sh",
+                    "-e",
+                    "-c",
+                    'tee -- "$1" > /dev/null',
+                    "write_file_script",
+                    file,
+                ],
                 input=contents,
+                timeout=TIMEOUT,
             )
         else:
             base64_contents = base64.b64encode(contents).decode("US-ASCII")
@@ -308,6 +337,7 @@ class DockerSandboxEnvironment(SandboxEnvironment):
                     file,
                 ],
                 input=base64_contents,
+                timeout=TIMEOUT,
             )
         if result.returncode != 0:
             if "permission denied" in result.stderr.casefold():

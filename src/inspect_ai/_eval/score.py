@@ -1,17 +1,23 @@
-import asyncio
+import functools
 from copy import deepcopy
 from pathlib import Path
 from typing import Any, Callable, Literal, cast
 
+import anyio
+
 from inspect_ai._display import display
+from inspect_ai._eval.context import init_task_context
 from inspect_ai._eval.loader import scorer_from_spec
-from inspect_ai._util.platform import platform_init
+from inspect_ai._util._async import configured_async_backend, run_coroutine, tg_collect
+from inspect_ai._util.platform import platform_init, running_in_notebook
 from inspect_ai._util.registry import registry_create, registry_unqualified_name
 from inspect_ai.log import (
     EvalLog,
 )
 from inspect_ai.log._log import EvalMetricDefinition
+from inspect_ai.log._model import model_roles_config_to_model_roles
 from inspect_ai.model import ModelName
+from inspect_ai.model._model import get_model
 from inspect_ai.scorer import Metric, Scorer, Target
 from inspect_ai.scorer._metric import SampleScore
 from inspect_ai.scorer._reducer import (
@@ -53,7 +59,17 @@ def score(
     # resolve scorers into a list
     scorers = [scorers] if isinstance(scorers, Scorer) else scorers
 
-    return asyncio.run(score_async(log, scorers, epochs_reducer, action))
+    if running_in_notebook():
+        return run_coroutine(score_async(log, scorers, epochs_reducer, action))
+    else:
+        return anyio.run(
+            score_async,
+            log,
+            scorers,
+            epochs_reducer,
+            action,
+            backend=configured_async_backend(),
+        )
 
 
 async def score_async(
@@ -105,13 +121,15 @@ async def score_async(
         def progress() -> None:
             p.update(1)
 
-        tasks = [
-            run_score_task(state, Target(sample.target), scorers, progress)
-            for (sample, state) in zip(log.samples, states)
-        ]
-
         # do scoring
-        scores: list[dict[str, SampleScore]] = await asyncio.gather(*tasks)
+        scores: list[dict[str, SampleScore]] = await tg_collect(
+            [
+                functools.partial(
+                    run_score_task, log, state, Target(sample.target), scorers, progress
+                )
+                for (sample, state) in zip(log.samples, states)
+            ]
+        )
 
         # write them back (gather ensures that they come back in the same order)
         for index, score in enumerate(scores):
@@ -203,11 +221,25 @@ async def task_score(
 
 
 async def run_score_task(
+    log: EvalLog,
     state: TaskState,
     target: Target,
     scorers: list[Scorer],
     progress: Callable[..., None],
 ) -> dict[str, SampleScore]:
+    # get the model then initialize the async context
+    model = get_model(
+        model=log.eval.model,
+        config=log.plan.config.merge(log.eval.model_generate_config),
+        **log.eval.model_args,
+    )
+
+    # get the model roles
+    model_roles = model_roles_config_to_model_roles(log.eval.model_roles)
+
+    # initialize active model
+    init_task_context(model, model_roles)
+
     results: dict[str, SampleScore] = {}
     for scorer in scorers:
         result = await scorer(state, target)

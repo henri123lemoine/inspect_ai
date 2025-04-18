@@ -1,7 +1,7 @@
 import clsx from "clsx";
 import { ProgressBar } from "./ProgressBar";
 
-import { ReactNode, UIEvent, useCallback, useEffect, useRef } from "react";
+import { FC, ReactNode, RefObject, useEffect, useRef } from "react";
 import styles from "./LargeModal.module.css";
 
 export interface ModalTool {
@@ -22,17 +22,15 @@ interface LargeModalProps {
   detail: string;
   detailTools?: ModalTools;
   showProgress: boolean;
-  footer?: React.ReactNode;
+  footer?: ReactNode;
   visible: boolean;
   onkeyup: (e: any) => void;
   onHide: () => void;
-  scrollRef: React.RefObject<HTMLDivElement | null>;
-  initialScrollPositionRef: React.RefObject<number>;
-  setInitialScrollPosition: (position: number) => void;
+  scrollRef: RefObject<HTMLDivElement | null>;
   children: ReactNode;
 }
 
-export const LargeModal: React.FC<LargeModalProps> = ({
+export const LargeModal: FC<LargeModalProps> = ({
   id,
   title,
   detail,
@@ -43,8 +41,6 @@ export const LargeModal: React.FC<LargeModalProps> = ({
   visible,
   onHide,
   showProgress,
-  initialScrollPositionRef,
-  setInitialScrollPosition,
   scrollRef,
 }) => {
   // The footer
@@ -56,27 +52,18 @@ export const LargeModal: React.FC<LargeModalProps> = ({
 
   // Support restoring the scroll position
   // but only do this for the first time that the children are set
-  scrollRef = scrollRef || useRef(null);
-  useEffect(() => {
-    if (scrollRef.current) {
-      setTimeout(() => {
-        if (
-          scrollRef.current &&
-          initialScrollPositionRef.current &&
-          scrollRef.current.scrollTop !== initialScrollPositionRef?.current
-        ) {
-          scrollRef.current.scrollTop = initialScrollPositionRef.current;
-        }
-      }, 0);
-    }
-  }, []);
+  const modalRef = useRef(null);
+  scrollRef = scrollRef || modalRef;
 
-  const onScroll = useCallback(
-    (e: UIEvent<HTMLDivElement>) => {
-      setInitialScrollPosition(e.currentTarget.scrollTop);
-    },
-    [setInitialScrollPosition],
-  );
+  // Focus the modal when it becomes visible
+  const dialogRef = useRef<HTMLDivElement>(null);
+
+  // Use effect to focus the modal when visible changes
+  useEffect(() => {
+    if (visible && dialogRef.current) {
+      dialogRef.current.focus();
+    }
+  }, [visible]);
 
   return (
     <div
@@ -89,6 +76,7 @@ export const LargeModal: React.FC<LargeModalProps> = ({
       role="dialog"
       onKeyUp={onkeyup}
       tabIndex={visible ? 0 : undefined}
+      ref={dialogRef}
     >
       <div
         className={clsx(
@@ -139,7 +127,7 @@ export const LargeModal: React.FC<LargeModalProps> = ({
             </button>
           </div>
           <ProgressBar animating={showProgress} />
-          <div className={"modal-body"} ref={scrollRef} onScroll={onScroll}>
+          <div className={"modal-body"} ref={scrollRef}>
             {children}
           </div>
           {modalFooter}
@@ -153,7 +141,7 @@ interface HtmlEntityProps {
   html: string;
 }
 
-const HtmlEntity: React.FC<HtmlEntityProps> = ({ html }) => (
+const HtmlEntity: FC<HtmlEntityProps> = ({ html }) => (
   <span dangerouslySetInnerHTML={{ __html: html }} />
 );
 
@@ -164,12 +152,7 @@ interface TitleToolProps {
   onClick: () => void;
 }
 
-const TitleTool: React.FC<TitleToolProps> = ({
-  label,
-  icon,
-  enabled,
-  onClick,
-}) => {
+const TitleTool: FC<TitleToolProps> = ({ label, icon, enabled, onClick }) => {
   return (
     <button
       type="button"

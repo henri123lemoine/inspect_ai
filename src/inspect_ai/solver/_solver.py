@@ -7,6 +7,7 @@ from typing import (
     Literal,
     ParamSpec,
     Protocol,
+    TypeAlias,
     cast,
     overload,
     runtime_checkable,
@@ -15,6 +16,7 @@ from typing import (
 from typing_extensions import Unpack
 
 from inspect_ai._util._async import is_callable_coroutine
+from inspect_ai._util.interrupt import check_sample_interrupt
 from inspect_ai._util.registry import (
     RegistryInfo,
     registry_add,
@@ -22,6 +24,8 @@ from inspect_ai._util.registry import (
     registry_name,
     registry_tag,
 )
+from inspect_ai.agent._agent import Agent, is_agent
+from inspect_ai.agent._as_solver import as_solver
 from inspect_ai.model import CachePolicy, GenerateConfigArgs
 
 from ._task_state import TaskState, set_sample_state
@@ -132,7 +136,11 @@ def solver_create(name: str, **kwargs: Any) -> Solver:
     Returns:
         Solver with registry info attribute
     """
-    return cast(Solver, registry_create("solver", name, **kwargs))
+    return registry_create("solver", name, **kwargs)
+
+
+SolverType: TypeAlias = Solver | Agent
+"""Return type for @solver decorated functions. """
 
 
 @overload
@@ -140,18 +148,18 @@ def solver(name: str) -> Callable[[Callable[P, Solver]], Callable[P, Solver]]: .
 
 
 @overload
-def solver(name: Callable[P, Solver]) -> Callable[P, Solver]: ...
+def solver(name: Callable[P, SolverType]) -> Callable[P, Solver]: ...
 
 
 def solver(
-    name: str | Callable[P, Solver],
+    name: str | Callable[P, SolverType],
 ) -> Callable[[Callable[P, Solver]], Callable[P, Solver]] | Callable[P, Solver]:
     r"""Decorator for registering solvers.
 
     Args:
         name:
             Optional name for solver. If the decorator has no name
-            argument then the name of the underlying Callable[P, Solver]
+            argument then the name of the underlying Callable[P, SolverType]
             object will be used to automatically assign a name.
 
     Returns:
@@ -175,7 +183,7 @@ def solver(
     #  (b) Ensure that instances of Solver created by SolverType also
     #      carry registry info.
     def create_solver_wrapper(
-        solver_type: Callable[P, Solver], name: str | None = None
+        solver_type: Callable[P, SolverType], name: str | None = None
     ) -> Callable[P, Solver]:
         solver_name = registry_name(
             solver_type, name if name else getattr(solver_type, "__name__")
@@ -184,6 +192,9 @@ def solver(
         @wraps(solver_type)
         def solver_wrapper(*args: P.args, **kwargs: P.kwargs) -> Solver:
             solver = solver_type(*args, **kwargs)
+            if is_agent(solver):
+                solver = as_solver(solver)
+            solver = cast(Solver, solver)
 
             if not is_callable_coroutine(solver):
                 raise TypeError(f"'{solver}' is not declared as an async callable.")
@@ -200,6 +211,7 @@ def solver(
                     state: TaskState, generate: Generate
                 ) -> TaskState:
                     state = await original_call(state, generate)
+                    check_sample_interrupt()
                     set_sample_state(state)
                     return state
 
@@ -215,6 +227,7 @@ def solver(
                     state: TaskState, generate: Generate
                 ) -> TaskState:
                     state = await solver(state, generate)
+                    check_sample_interrupt()
                     set_sample_state(state)
                     return state
 

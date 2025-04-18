@@ -1,6 +1,5 @@
 import * as path from "path";
 
-
 import { format, isToday, isThisYear } from "date-fns";
 
 import {
@@ -16,33 +15,26 @@ import { LogNode, LogListing } from "./log-listing";
 import { throttle } from "lodash";
 import { InspectViewServer } from "../../inspect/inspect-view-server";
 import { EvalLog } from "../../../@types/log";
-import { evalSummary, LogElementQueueProcessor } from "./log-listing-server-queue";
+import { evalSummary } from "./log-listing-server-queue";
 
 export class LogTreeDataProvider
-  implements TreeDataProvider<LogNode>, vscode.Disposable {
+  implements TreeDataProvider<LogNode>, vscode.Disposable
+{
   public static readonly viewType = "inspect_ai.logs-view";
 
   private readonly throttledRefresh_: () => void;
-  private readonly queueProcessor_;
 
   constructor(
     private context_: vscode.ExtensionContext,
-    private viewServer_: InspectViewServer
+    private viewServer_: InspectViewServer,
   ) {
     this.throttledRefresh_ = throttle(() => {
       this.logListing_?.invalidate();
       this._onDidChangeTreeData.fire();
     }, 1000);
-
-    this.queueProcessor_ = new LogElementQueueProcessor(
-      viewServer_,
-      () => this.logListing_,
-      context_,
-      (element) => this._onDidChangeTreeData.fire(element)
-    );
   }
 
-  dispose() { }
+  dispose() {}
 
   public setLogListing(logListing: LogListing) {
     this.logListing_ = logListing;
@@ -63,36 +55,11 @@ export class LogTreeDataProvider
     contextValue.push(
       this.logListing_?.uriForNode(element)?.scheme === "file"
         ? "local"
-        : "remote"
+        : "remote",
     );
     contextValue.push(element.name.endsWith(".eval") ? "eval" : "json");
-    const defaultIconPath = (element.type === "file"
-      ? element.name.endsWith(".eval")
-        ? this.context_.asAbsolutePath(
-          path.join("assets", "icon", "eval-treeview.svg")
-        )
-        : new vscode.ThemeIcon(
-          "bracket",
-          new vscode.ThemeColor("symbolIcon.classForeground")
-        )
-      : undefined);
-
 
     const uri = this.logListing_?.uriForNode(element);
-
-    // See whether there cached server data available
-    // (this will just prevent flashing of the icons when
-    // cached data is available)
-    let cached;
-    if (uri) {
-      cached = this.queueProcessor_.cachedValue(uri?.toString());
-      element.iconPath = element.iconPath || cached?.iconPath || defaultIconPath;
-
-      // Screen invalid tooltips (empty objects)
-      if (cached?.tooltip?.value) {
-        element.tooltip = element.tooltip || cached?.tooltip;
-      }
-    }
 
     // base tree item
     const treeItem: TreeItem = {
@@ -102,12 +69,12 @@ export class LogTreeDataProvider
         (element.type === "file"
           ? element.name.endsWith(".eval")
             ? this.context_.asAbsolutePath(
-              path.join("assets", "icon", "eval-treeview.svg")
-            )
+                path.join("assets", "icon", "eval-treeview.svg"),
+              )
             : new vscode.ThemeIcon(
-              "bracket",
-              new vscode.ThemeColor("symbolIcon.classForeground")
-            )
+                "bracket",
+                new vscode.ThemeColor("symbolIcon.classForeground"),
+              )
           : undefined),
       label: element.name.split("/").pop(),
       collapsibleState:
@@ -137,11 +104,6 @@ export class LogTreeDataProvider
         arguments: [uri],
       };
     }
-
-    if (!element.iconPath) {
-      this.queueProcessor_.enqueueElement(element);
-    }
-
     return treeItem;
   }
 
@@ -186,9 +148,6 @@ export class LogTreeDataProvider
   private logListing_?: LogListing;
 }
 
-
-
-
 function parseLogDate(logName: string) {
   // Take only first bit
   const logDate = logName.split("_")[0];
@@ -196,7 +155,7 @@ function parseLogDate(logName: string) {
   // Input validation
   if (!logDate.match(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}[+-]\d{2}-\d{2}$/)) {
     throw new Error(
-      `Unexpcted date format. Expected format: YYYY-MM-DDThh-mm-ss+hh-mm or YYYY-MM-DDThh-mm-ss-hh-mm, got ${logDate}`
+      `Unexpcted date format. Expected format: YYYY-MM-DDThh-mm-ss+hh-mm or YYYY-MM-DDThh-mm-ss-hh-mm, got ${logDate}`,
     );
   }
 
@@ -204,7 +163,7 @@ function parseLogDate(logName: string) {
   // Leave the date portion (before T) unchanged
   const normalized = logDate.replace(
     /T(\d{2})-(\d{2})-(\d{2})([+-])(\d{2})-(\d{2})/,
-    "T$1:$2:$3$4$5:$6"
+    "T$1:$2:$3$4$5:$6",
   );
   const result = new Date(normalized);
   if (isNaN(result.getTime())) {
@@ -228,4 +187,3 @@ function formatPrettyDateTime(date: Date) {
   // For other years, include the year
   return format(date, "MMM d yyyy, h:mmaaa");
 }
-

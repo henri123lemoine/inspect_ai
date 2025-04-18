@@ -1,17 +1,27 @@
 import abc
-import asyncio
+import contextlib
 import functools
 import json
 import logging
 import os
 import time
 from contextvars import ContextVar
-from copy import deepcopy
+from copy import copy, deepcopy
+from datetime import datetime
 from types import TracebackType
-from typing import Any, Callable, Literal, Type, cast
+from typing import (
+    Any,
+    AsyncIterator,
+    Callable,
+    Literal,
+    Sequence,
+    Type,
+    cast,
+)
 
 from pydantic_core import to_jsonable_python
 from tenacity import (
+    RetryCallState,
     retry,
     retry_if_exception,
     stop_after_attempt,
@@ -19,10 +29,19 @@ from tenacity import (
     stop_never,
     wait_exponential_jitter,
 )
+from tenacity.stop import StopBaseT
 
-from inspect_ai._util.constants import DEFAULT_MAX_CONNECTIONS
-from inspect_ai._util.content import Content, ContentImage, ContentText
+from inspect_ai._util.constants import DEFAULT_MAX_CONNECTIONS, HTTP
+from inspect_ai._util.content import (
+    Content,
+    ContentImage,
+    ContentReasoning,
+    ContentText,
+)
 from inspect_ai._util.hooks import init_hooks, override_api_key, send_telemetry
+from inspect_ai._util.interrupt import check_sample_interrupt
+from inspect_ai._util.logger import warn_once
+from inspect_ai._util.notgiven import NOT_GIVEN, NotGiven
 from inspect_ai._util.platform import platform_init
 from inspect_ai._util.registry import (
     RegistryInfo,
@@ -30,14 +49,24 @@ from inspect_ai._util.registry import (
     registry_info,
     registry_unqualified_name,
 )
-from inspect_ai._util.retry import log_rate_limit_retry
+from inspect_ai._util.retry import report_http_retry
 from inspect_ai._util.trace import trace_action
+from inspect_ai._util.working import report_sample_waiting_time, sample_working_time
 from inspect_ai.tool import Tool, ToolChoice, ToolFunction, ToolInfo
+from inspect_ai.tool._tool import ToolSource
+from inspect_ai.tool._tool_call import ToolCallModelInputHints
 from inspect_ai.tool._tool_def import ToolDef, tool_defs
 from inspect_ai.util import concurrency
 
 from ._cache import CacheEntry, CachePolicy, cache_fetch, cache_store
-from ._call_tools import disable_parallel_tools, tool_call_view, tools_info
+from ._call_tools import (
+    disable_parallel_tools,
+    execute_tools,
+    tool_call_view,
+)
+from ._call_tools import (
+    tools_info as get_tools_info,
+)
 from ._chat_message import (
     ChatMessage,
     ChatMessageAssistant,
@@ -45,7 +74,10 @@ from ._chat_message import (
     ChatMessageTool,
     ChatMessageUser,
 )
-from ._conversation import conversation_assistant_error, conversation_assistant_message
+from ._display import (
+    display_conversation_assistant,
+    display_conversation_assistant_error,
+)
 from ._generate_config import (
     GenerateConfig,
     active_generate_config,
@@ -66,7 +98,7 @@ class ModelAPI(abc.ABC):
     by the user. You can then pass these on to the approriate place in
     your model initialisation code (for example, here is what many
     of the built-in providers do with the `model_args` passed to them:
-    https://inspect.ai-safety-institute.org.uk/models.html#model-args)
+    https://inspect.aisi.org.uk/models.html#model-args)
     """
 
     def __init__(
@@ -111,9 +143,20 @@ class ModelAPI(abc.ABC):
         # set any explicitly specified api key
         self.api_key = api_key
 
-    async def close(self) -> None:
-        """Close method for closing any client allocated for the model."""
-        pass
+    async def aclose(self) -> None:
+        """Async close method for closing any client allocated for the model."""
+        self.close()
+
+    def close(self) -> None:
+        """Sync close method for closing any client allocated for the model."""
+        # if this is is called and aclose is implemented by a subclass then
+        # raise a runtime error (as this model reuqires async close)
+        aclose_method = getattr(self.__class__, "aclose")
+        base_aclose_method = getattr(ModelAPI, "aclose")
+        if aclose_method != base_aclose_method:
+            raise RuntimeError(
+                f"{self.__class__.__name__} models require an async close / context manager."
+            )
 
     @abc.abstractmethod
     async def generate(
@@ -146,6 +189,17 @@ class ModelAPI(abc.ABC):
         """Default max_tokens."""
         return None
 
+    def max_tokens_for_config(self, config: GenerateConfig) -> int | None:
+        """Default max_tokens for a given config.
+
+        Args:
+           config: Generation config.
+
+        Returns:
+           Default maximum tokens for specified configuration.
+        """
+        return None
+
     def max_connections(self) -> int:
         """Default max_connections."""
         return DEFAULT_MAX_CONNECTIONS
@@ -154,11 +208,11 @@ class ModelAPI(abc.ABC):
         """Scope for enforcement of max_connections."""
         return "default"
 
-    def is_rate_limit(self, ex: BaseException) -> bool:
-        """Is this exception a rate limit error.
+    def should_retry(self, ex: Exception) -> bool:
+        """Should this exception be retried?
 
         Args:
-           ex: Exception to check for rate limit.
+           ex: Exception to check for retry
         """
         return False
 
@@ -178,9 +232,21 @@ class ModelAPI(abc.ABC):
         """Tool results can contain images"""
         return False
 
-    def has_reasoning_history(self) -> bool:
-        """Chat message assistant messages can include reasoning."""
+    def disable_computer_screenshot_truncation(self) -> bool:
+        """Some models do not support truncation of computer screenshots."""
         return False
+
+    def emulate_reasoning_history(self) -> bool:
+        """Chat message assistant messages with reasoning should playback reasoning with emulation (.e.g. <think> tags)"""
+        return True
+
+    def force_reasoning_history(self) -> Literal["none", "all", "last"] | None:
+        """Force a specific reasoning history behavior for this provider."""
+        return None
+
+    def auto_reasoning_history(self) -> Literal["none", "all", "last"]:
+        """Behavior to use for reasoning_history='auto'"""
+        return "all"
 
 
 class Model:
@@ -202,15 +268,20 @@ class Model:
     config: GenerateConfig
     """Generation config."""
 
-    def __init__(self, api: ModelAPI, config: GenerateConfig) -> None:
+    def __init__(
+        self, api: ModelAPI, config: GenerateConfig, model_args: dict[str, Any] = {}
+    ) -> None:
         """Create a model.
 
         Args:
            api: Model API provider.
            config: Model configuration.
+           model_args: Optional model args
         """
         self.api = api
         self.config = config
+        self.model_args = model_args
+        self._role: str | None = None
 
         # state indicating whether our lifetime is bound by a context manager
         self._context_bound = False
@@ -220,9 +291,22 @@ class Model:
         # get hit before score() or eval() so we activate nest_asyncio
         platform_init()
 
-    async def __aenter__(self: "Model") -> "Model":
+    def __enter__(self: "Model") -> "Model":
         self._context_bound = True
         return self
+
+    async def __aenter__(self: "Model") -> "Model":
+        return self.__enter__()
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> None:
+        if not self._closed:
+            self.api.close()
+            self._closed = True
 
     async def __aexit__(
         self,
@@ -231,7 +315,7 @@ class Model:
         exc_tb: TracebackType | None,
     ) -> None:
         if not self._closed:
-            await self.api.close()
+            await self.api.aclose()
             self._closed = True
 
     @property
@@ -239,16 +323,21 @@ class Model:
         """Model name."""
         return self.api.model_name
 
+    @property
+    def role(self) -> str | None:
+        """Model role."""
+        return self._role
+
+    def _set_role(self, role: str) -> None:
+        self._role = role
+
     def __str__(self) -> str:
         return f"{ModelName(self)}"
 
     async def generate(
         self,
         input: str | list[ChatMessage],
-        tools: list[Tool]
-        | list[ToolDef]
-        | list[ToolInfo]
-        | list[Tool | ToolDef | ToolInfo] = [],
+        tools: Sequence[Tool | ToolDef | ToolInfo | ToolSource] | ToolSource = [],
         tool_choice: ToolChoice | None = None,
         config: GenerateConfig = GenerateConfig(),
         cache: bool | CachePolicy = False,
@@ -283,9 +372,10 @@ class Model:
         config = base_config.merge(config)
 
         # provide max_tokens from the model api if required
-        config.max_tokens = (
-            config.max_tokens if config.max_tokens else self.api.max_tokens()
-        )
+        if config.max_tokens is None:
+            config.max_tokens = self.api.max_tokens_for_config(config)
+            if config.max_tokens is None:
+                config.max_tokens = self.api.max_tokens()
 
         # disable parallel tool calls if requested by any of our tools
         if disable_parallel_tools(tools):
@@ -300,22 +390,96 @@ class Model:
             input = [ChatMessageSystem(content=config.system_message)] + input
 
         # enforce concurrency limits
+        start_time = datetime.now()
+        working_start = sample_working_time()
         async with self._connection_concurrency(config):
-            return await self._generate(
-                input=input,
-                tools=tools,
-                tool_choice=tool_choice,
+            from inspect_ai.log._samples import track_active_sample_retries
+
+            # generate
+            with track_active_sample_retries():
+                output = await self._generate(
+                    input=input,
+                    tools=tools,
+                    tool_choice=tool_choice,
+                    config=config,
+                    cache=cache,
+                )
+
+            # update the most recent ModelEvent with the actual start/completed
+            # times as well as a computation of working time (events are
+            # created _after_ the call to _generate, potentially in response
+            # to retries, so they need their timestamp updated so it accurately
+            # reflects the full start/end time which we know here)
+            from inspect_ai.log._transcript import ModelEvent, transcript
+
+            last_model_event = transcript().find_last_event(ModelEvent)
+            if last_model_event:
+                last_model_event.timestamp = start_time
+                last_model_event.working_start = working_start
+                completed = datetime.now()
+                last_model_event.completed = completed
+                last_model_event.working_time = (
+                    output.time
+                    if output.time is not None
+                    else (completed - start_time).total_seconds()
+                )
+
+            # return output
+            return output
+
+    async def generate_loop(
+        self,
+        input: str | list[ChatMessage],
+        tools: Sequence[Tool | ToolDef | ToolSource] | ToolSource = [],
+        config: GenerateConfig = GenerateConfig(),
+        cache: bool | CachePolicy = False,
+    ) -> tuple[list[ChatMessage], ModelOutput]:
+        """Generate output from the model, looping as long as the model calls tools.
+
+        Similar to `generate()`, but runs in a loop resolving model tool calls.
+        The loop terminates when the model stops calling tools. The final `ModelOutput`
+        as well the message list for the conversation are returned as a tuple.
+
+        Args:
+          input: Chat message input (if a `str` is passed it is converted
+            to a `ChatMessageUser`).
+          tools: Tools available for the model to call.
+          config: Model configuration.
+          cache: Caching behavior for generate responses (defaults to no caching).
+
+        Returns:
+           Tuple of list[ChatMessage], ModelOutput
+        """
+        # initialise messages
+        input = [ChatMessageUser(content=input)] if isinstance(input, str) else input
+        messages = copy(input)
+        while True:
+            # call model
+            output = await self.generate(
+                input=messages,
+                tools=tools,  # type:ignore[arg-type]
                 config=config,
                 cache=cache,
             )
 
+            # append to new messages
+            messages.append(output.message)
+
+            # make tool calls or terminate if there are none
+            if output.message.tool_calls:
+                tools_messages, tools_output = await execute_tools(
+                    messages, tools, config.max_tool_output
+                )
+                messages.extend(tools_messages)
+                if tools_output is not None:
+                    output = tools_output
+            else:
+                return messages[len(input) :], output
+
     async def _generate(
         self,
         input: list[ChatMessage],
-        tools: list[Tool]
-        | list[ToolDef]
-        | list[ToolInfo]
-        | list[Tool | ToolDef | ToolInfo],
+        tools: Sequence[Tool | ToolDef | ToolInfo | ToolSource] | ToolSource,
         tool_choice: ToolChoice | None,
         config: GenerateConfig,
         cache: bool | CachePolicy = False,
@@ -323,15 +487,30 @@ class Model:
         # default to 'auto' for tool_choice (same as underlying model apis)
         tool_choice = tool_choice if tool_choice else "auto"
 
+        # resolve top level tool source
+        if isinstance(tools, ToolSource):
+            tools = await tools.tools()
+
+        # resolve tool sources
+        resolved_tools: list[Tool | ToolDef | ToolInfo] = []
+        for tool in tools:
+            if isinstance(tool, ToolSource):
+                source_tools = await tool.tools()
+                resolved_tools.extend(source_tools)
+            else:
+                resolved_tools.append(tool)
+
         # extract tool defs if we can
-        tdefs = tool_defs([tool for tool in tools if not isinstance(tool, ToolInfo)])
+        tdefs = await tool_defs(
+            [tool for tool in resolved_tools if not isinstance(tool, ToolInfo)]
+        )
 
         # resolve all tools into tool_info
-        tools = tools_info(tools)
+        tools_info = get_tools_info(resolved_tools)
 
         # if we have a specific tool selected then filter out the others
         if isinstance(tool_choice, ToolFunction):
-            tools = [tool for tool in tools if tool.name == tool_choice.name]
+            tools_info = [tool for tool in tools_info if tool.name == tool_choice.name]
 
         # if tool_choice is "none" or if there are no tools then fully purge
         # the tools (as some models (e.g. openai and mistral) get confused
@@ -339,20 +518,24 @@ class Model:
         # (they both 'semi' use the tool by placing the arguments in JSON
         # in their output!). on the other hand, anthropic actually errors if
         # there are tools anywhere in the message stream and no tools defined.
-        if tool_choice == "none" or len(tools) == 0:
+        if tool_choice == "none" or len(tools_info) == 0:
             # allow model providers to implement a tools_required() method to
             # force tools to be passed (we need this for anthropic)
             if not self.api.tools_required():
-                tools = []
+                tools_info = []
             tool_choice = "none"
 
         # handle reasoning history
-        input = resolve_reasoning_history(
-            input, config, self.api.has_reasoning_history()
-        )
+        input = resolve_reasoning_history(input, config, self.api)
 
         # apply any tool model_input handlers
-        input = resolve_tool_model_input(tdefs, input)
+        input = resolve_tool_model_input(
+            tdefs,
+            input,
+            ToolCallModelInputHints(
+                disable_computer_screenshot_truncation=self.api.disable_computer_screenshot_truncation()
+            ),
+        )
 
         # break tool image content out into user messages if the model doesn't
         # support tools returning images
@@ -367,29 +550,32 @@ class Model:
         if self.api.collapse_assistant_messages():
             input = collapse_consecutive_assistant_messages(input)
 
-        # retry for rate limit errors (max of 30 minutes)
+        # retry for transient http errors:
+        # - no default timeout or max_retries (try forever)
+        # - exponential backoff starting at 3 seconds (will wait 25 minutes
+        #   on the 10th retry,then will wait no longer than 30 minutes on
+        #   subsequent retries)
+        if config.max_retries is not None and config.timeout is not None:
+            stop: StopBaseT = stop_after_attempt(config.max_retries) | stop_after_delay(
+                config.timeout
+            )
+        elif config.max_retries is not None:
+            stop = stop_after_attempt(config.max_retries)
+        elif config.timeout is not None:
+            stop = stop_after_delay(config.timeout)
+        else:
+            stop = stop_never
+
         @retry(
-            wait=wait_exponential_jitter(max=(30 * 60), jitter=5),
-            retry=retry_if_exception(self.api.is_rate_limit),
-            stop=(
-                (
-                    stop_after_delay(config.timeout)
-                    | stop_after_attempt(config.max_retries)
-                )
-                if config.timeout and config.max_retries
-                else (
-                    stop_after_delay(config.timeout)
-                    if config.timeout
-                    else (
-                        stop_after_attempt(config.max_retries)
-                        if config.max_retries
-                        else stop_never
-                    )
-                )
-            ),
-            before_sleep=functools.partial(log_rate_limit_retry, self.api.model_name),
+            wait=wait_exponential_jitter(initial=3, max=(30 * 60), jitter=3),
+            retry=retry_if_exception(self.should_retry),
+            stop=stop,
+            before_sleep=functools.partial(log_model_retry, self.api.model_name),
         )
         async def generate() -> ModelOutput:
+            check_sample_interrupt()
+
+            cache_entry: CacheEntry | None
             if cache:
                 if isinstance(cache, CachePolicy):
                     policy = cache
@@ -403,13 +589,13 @@ class Model:
                     model=str(self),
                     policy=policy,
                     tool_choice=tool_choice,
-                    tools=tools,
+                    tools=tools_info,
                 )
                 existing = cache_fetch(cache_entry)
                 if isinstance(existing, ModelOutput):
                     self._record_model_interaction(
                         input=input,
-                        tools=tools,
+                        tools=tools_info,
                         tool_choice=tool_choice,
                         config=config,
                         cache="read",
@@ -417,6 +603,8 @@ class Model:
                         call=None,
                     )
                     return existing
+            else:
+                cache_entry = None
 
             # verify that model apis are allowed
             self.verify_model_apis()
@@ -425,21 +613,23 @@ class Model:
             # (we'll update it with the results once we have them)
             complete = self._record_model_interaction(
                 input=input,
-                tools=tools,
+                tools=tools_info,
                 tool_choice=tool_choice,
                 config=config,
                 cache="write" if cache else None,
             )
 
             with trace_action(logger, "Model", f"generate ({str(self)})"):
-                time_start = time.perf_counter()
-                result = await self.api.generate(
-                    input=input,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    config=config,
-                )
-                time_elapsed = time.perf_counter() - time_start
+                time_start = time.monotonic()
+                try:
+                    result = await self.api.generate(
+                        input=input,
+                        tools=tools_info,
+                        tool_choice=tool_choice,
+                        config=config,
+                    )
+                finally:
+                    time_elapsed = time.monotonic() - time_start
 
             if isinstance(result, tuple):
                 output, call = result
@@ -458,8 +648,12 @@ class Model:
                 error_message = f"{error}\n\nRequest:\n{request}"
                 raise RuntimeError(error_message)
 
-            # update output with time elapsed
-            output.time = time_elapsed
+            # update output with time (call.time captures time spent
+            # on the actual request that succeeds w/ status 200)
+            if call and call.time is not None:
+                output.time = call.time
+            else:
+                output.time = time_elapsed
 
             # add views to tool calls
             for choice in output.choices:
@@ -480,16 +674,45 @@ class Model:
                     json.dumps(dict(model=str(self), usage=output.usage.model_dump())),
                 )
 
-            if cache:
+            if cache and cache_entry:
                 cache_store(entry=cache_entry, output=output)
 
             return output
 
-        # call the model
+        # call the model (this will so retries, etc., so report waiting time
+        # as elapsed time - actual time for successful model call)
+        time_start = time.monotonic()
         model_output = await generate()
+        total_time = time.monotonic() - time_start
+        if model_output.time:
+            report_sample_waiting_time(total_time - model_output.time)
 
         # return results
         return model_output
+
+    def should_retry(self, ex: BaseException) -> bool:
+        if isinstance(ex, Exception):
+            # check standard should_retry() method
+            retry = self.api.should_retry(ex)
+            if retry:
+                report_http_retry()
+                return True
+
+            # see if the API implements legacy is_rate_limit() method
+            is_rate_limit = getattr(self.api, "is_rate_limit", None)
+            if is_rate_limit:
+                warn_once(
+                    logger,
+                    f"provider '{self.name}' implements deprecated is_rate_limit() method, "
+                    + "please change to should_retry()",
+                )
+                retry = cast(bool, is_rate_limit(ex))
+                if retry:
+                    report_http_retry()
+                    return True
+
+        # no retry
+        return False
 
     # function to verify that its okay to call model apis
     def verify_model_apis(self) -> None:
@@ -510,7 +733,10 @@ class Model:
     # override the _connection_key() argument to provide a scope within which
     # to enforce max_connections (e.g. by account/api_key, by endpoint, etc.)
 
-    def _connection_concurrency(self, config: GenerateConfig) -> asyncio.Semaphore:
+    @contextlib.asynccontextmanager
+    async def _connection_concurrency(
+        self, config: GenerateConfig
+    ) -> AsyncIterator[None]:
         """Get the appropriate connection semaphore for this model instance."""
         max_connections = (
             config.max_connections
@@ -518,11 +744,12 @@ class Model:
             else self.api.max_connections()
         )
         model_name = ModelName(self)
-        return concurrency(
-            name=f"{model_name.api}",
+        async with concurrency(
+            name=str(model_name),
             concurrency=max_connections,
             key=f"Model{self.api.connection_key()}",
-        )
+        ):
+            yield
 
     def _record_model_interaction(
         self,
@@ -540,6 +767,7 @@ class Model:
         model = str(self)
         event = ModelEvent(
             model=model,
+            role=self.role,
             input=input,
             tools=tools,
             tool_choice=tool_choice,
@@ -558,14 +786,15 @@ class Model:
             # trace
             if isinstance(result, ModelOutput):
                 if result.choices:
-                    conversation_assistant_message(input, result.choices[0].message)
+                    display_conversation_assistant(input, result.choices[0].message)
                 event.output = result
             else:
-                conversation_assistant_error(result)
+                display_conversation_assistant_error(result)
                 event.error = repr(result)
 
             event.call = updated_call
             event.pending = None
+            transcript()._event_updated(event)
 
         # if we have output then complete it now
         if output:
@@ -629,6 +858,9 @@ class ModelName:
 
 def get_model(
     model: str | Model | None = None,
+    *,
+    role: str | None = None,
+    default: str | Model | None = None,
     config: GenerateConfig = GenerateConfig(),
     base_url: str | None = None,
     api_key: str | None = None,
@@ -659,11 +891,16 @@ def get_model(
           if `None` is passed then the model currently being
           evaluated is returned (or if there is no evaluation
           then the model referred to by `INSPECT_EVAL_MODEL`).
+       role: Optional named role for model (e.g. for roles specified
+          at the task or eval level). Provide a `default` as a fallback
+          in the case where the `role` hasn't been externally specified.
+       default: Optional. Fallback model in case the specified
+          `model` or `role` is not found.
        config: Configuration for model.
        base_url: Optional. Alternate base URL for model.
        api_key: Optional. API key for model.
        memoize: Use/store a cached version of the model based on
-         the parameters to `get_model()`
+          the parameters to `get_model()`
        **model_args: Additional args to
           pass to model constructor.
 
@@ -674,6 +911,26 @@ def get_model(
     # start with seeing if a model was passed
     if isinstance(model, Model):
         return model
+
+    # next see if this is the special "none" model
+    if model == "none":
+        model = "none/none"
+
+    # resolve model role
+    if role is not None:
+        model_for_role = model_roles().get(role, None)
+        if model_for_role is not None:
+            return model_for_role
+
+    # if a default was specified then use it as the model if
+    # no model was passed
+    if model is None:
+        if isinstance(default, Model):
+            if role is not None:
+                default._set_role(role)
+            return default
+        else:
+            model = default
 
     # now try finding an 'ambient' model (active or env var)
     if model is None:
@@ -698,6 +955,7 @@ def get_model(
     if memoize:
         model_cache_key = (
             model
+            + str(role)
             + config.model_dump_json(exclude_none=True)
             + str(base_url)
             + str(api_key)
@@ -737,11 +995,12 @@ def get_model(
             config=config,
             **model_args,
         )
-        m = Model(modelapi_instance, config)
+        m = Model(modelapi_instance, config, model_args)
+        if role is not None:
+            m._set_role(role)
         if memoize:
             _models[model_cache_key] = m
         return m
-
     else:
         from_api = f" from {api_name}" if api_name else ""
         raise ValueError(f"Model name {model}{from_api} not recognized.")
@@ -762,17 +1021,25 @@ def cached_model(key: str) -> Model | None:
 
 
 def resolve_models(
-    model: str | Model | list[str] | list[Model] | None,
+    model: str | Model | list[str] | list[Model] | None | NotGiven = NOT_GIVEN,
     model_base_url: str | None = None,
     model_args: dict[str, Any] = dict(),
     config: GenerateConfig = GenerateConfig(),
 ) -> list[Model]:
+    # resolve NotGiven to current INSPECT_EVAL_MODEL
+    if isinstance(model, NotGiven):
+        model = os.getenv("INSPECT_EVAL_MODEL", None)
+
+    # resolve None to NoModel
+    if model is None:
+        return [get_model("none")]
+
     # reflect back a plain model
     if isinstance(model, Model):
         return [model]
 
     # helper to resolve model of various types
-    def resolve_model(m: str | Model | None) -> Model:
+    def resolve_model(m: str | Model) -> Model:
         return get_model(
             model=m,
             base_url=model_base_url,
@@ -780,11 +1047,8 @@ def resolve_models(
             **model_args,
         )
 
-    # resolve None and str to list
-    if model is None or isinstance(model, str):
-        model = model or os.getenv("INSPECT_EVAL_MODEL", None)
-        if model is None:
-            raise ValueError("No model specified (and no INSPECT_EVAL_MODEL defined)")
+    # str to list
+    if isinstance(model, str):
         model = [m.strip() for m in model.split(",")]
 
     # resolve models
@@ -830,72 +1094,95 @@ def simple_input_messages(
 
 
 def resolve_reasoning_history(
-    messages: list[ChatMessage], config: GenerateConfig, api_has_reasoning_history: bool
+    messages: list[ChatMessage],
+    config: GenerateConfig,
+    model_api: ModelAPI,
 ) -> list[ChatMessage]:
-    # determine if we are including reasoning history
-    reasoning_history = config.reasoning_history is not False
-
     # determine up front if we have any reasoning content
     have_reasoning = any(
         [
-            isinstance(m, ChatMessageAssistant) and m.reasoning is not None
+            isinstance(m, ChatMessageAssistant)
+            and isinstance(m.content, list)
+            and any([c for c in m.content if isinstance(c, ContentReasoning)])
             for m in messages
         ]
     )
     if not have_reasoning:
         return messages
 
-    # API asssistant message format directly supports reasoning history so we will:
-    #   (a) Remove reasoning content entirely if config says not to include it; or
-    #   (b) Leave the messages alone if config says to include it
-    if api_has_reasoning_history:
-        # remove reasoning history as per config
-        if not reasoning_history:
-            resolved_messages: list[ChatMessage] = []
-            for message in messages:
-                if isinstance(message, ChatMessageAssistant):
-                    resolved_messages.append(
-                        message.model_copy(update={"reasoning": None})
-                    )
-                else:
-                    resolved_messages.append(message)
+    # determine reasoning history configuration
+    reasoning_history = (
+        config.reasoning_history if config.reasoning_history is not None else "auto"
+    )
 
-            return resolved_messages
+    # see if the provider is forcing a reasoning history
+    force = model_api.force_reasoning_history()
+    if force is not None:
+        reasoning_history = force
+    # if it's 'auto' then defer to the provider
+    elif reasoning_history == "auto":
+        reasoning_history = model_api.auto_reasoning_history()
 
-        # include reasoning history as per config
-        else:
-            return messages
-
-    # API can't represent reasoning natively so include <think> tags
-    elif reasoning_history:
+    # generate a version of message history with the correct history
+    if reasoning_history == "all":
+        resolved_messages: list[ChatMessage] = messages
+    else:
+        found_last = False
         resolved_messages = []
-        for message in messages:
-            if (
-                isinstance(message, ChatMessageAssistant)
-                and message.reasoning is not None
+        for message in reversed(messages):
+            if isinstance(message, ChatMessageAssistant) and isinstance(
+                message.content, list
             ):
-                message = deepcopy(message)
-                if isinstance(message.content, str):
-                    message.content = (
-                        f"<think>\n{message.reasoning}\n</think>\n\n{message.content}"
-                    )
-                else:
-                    message.content.insert(
-                        0, ContentText(text=f"<think>\n{message.reasoning}\n</think>\n")
-                    )
-                message.reasoning = None
+                # is there reasoning in this message?
+                has_reasoning = any(
+                    isinstance(c, ContentReasoning) for c in message.content
+                )
+                # remove it unless we are in "last" mode and haven't yet found last
+                if has_reasoning:
+                    if reasoning_history == "none" or found_last:
+                        message = message.model_copy(
+                            update={
+                                "content": [
+                                    content
+                                    for content in message.content
+                                    if not isinstance(content, ContentReasoning)
+                                ]
+                            }
+                        )
+                    found_last = True
 
             resolved_messages.append(message)
 
-        return resolved_messages
+        # reverse them back
+        resolved_messages.reverse()
 
-    # api doesn't handle reasoning and config says no reasoning_history, nothing to do
-    else:
-        return messages
+    # api can't represent reasoning natively so emulate it
+    if model_api.emulate_reasoning_history():
+        emulated_messages: list[ChatMessage] = []
+        for message in resolved_messages:
+            if isinstance(message, ChatMessageAssistant) and isinstance(
+                message.content, list
+            ):
+                content: list[Content] = []
+                for c in message.content:
+                    if isinstance(c, ContentReasoning):
+                        content.append(
+                            ContentText(text=f"<think>\n{c.reasoning}\n</think>")
+                        )
+                    else:
+                        content.append(c)
+                message = message.model_copy(update={"content": content})
+
+            emulated_messages.append(message)
+
+        resolved_messages = emulated_messages
+
+    # return messages
+    return resolved_messages
 
 
 def resolve_tool_model_input(
-    tdefs: list[ToolDef], messages: list[ChatMessage]
+    tdefs: list[ToolDef], messages: list[ChatMessage], hints: ToolCallModelInputHints
 ) -> list[ChatMessage]:
     # filter on tooldefs that have a model input handler
     tdefs = [tdef for tdef in tdefs if tdef.model_input is not None]
@@ -921,7 +1208,7 @@ def resolve_tool_model_input(
         # call the function for each tool, passing the index, total, and content
         for index, message in enumerate(tdef_tool_messages):
             message.content = tdef.model_input(
-                index, len(tool_messages), message.content
+                index, len(tool_messages), message.content, hints
             )
 
     # return modified messages
@@ -973,9 +1260,11 @@ def tool_result_images_reducer(
             messages
             + [
                 ChatMessageTool(
+                    id=message.id,
                     content=edited_tool_message_content,
                     tool_call_id=message.tool_call_id,
                     function=message.function,
+                    internal=message.internal,
                 )
             ],
             pending_content + new_user_message_content,
@@ -1078,18 +1367,32 @@ def consecutive_message_reducer(
 def combine_messages(
     a: ChatMessage, b: ChatMessage, message_type: Type[ChatMessage]
 ) -> ChatMessage:
+    # TODO: Although unlikely to happen based on the current call sites, these
+    # fabricated messages drop interesting fields from the source messages -
+    # such as `internal_name`, `tool_calls`, etc.
+    # To be more specific, since all `ChatMessageXxx` fields other than `id` and
+    # `content` have default values, it's more the case that they're reset to
+    # default values rather than dropped.
+
     if isinstance(a.content, str) and isinstance(b.content, str):
-        return message_type(content=f"{a.content}\n{b.content}")
+        return message_type(id=a.id, content=f"{a.content}\n{b.content}")
     elif isinstance(a.content, list) and isinstance(b.content, list):
-        return message_type(content=a.content + b.content)
+        return message_type(id=a.id, content=a.content + b.content)
     elif isinstance(a.content, str) and isinstance(b.content, list):
-        return message_type(content=[ContentText(text=a.content), *b.content])
+        return message_type(id=a.id, content=[ContentText(text=a.content), *b.content])
     elif isinstance(a.content, list) and isinstance(b.content, str):
-        return message_type(content=a.content + [ContentText(text=b.content)])
+        return message_type(id=a.id, content=a.content + [ContentText(text=b.content)])
     else:
         raise TypeError(
             f"Cannot combine messages with invalid content types: {a.content!r}, {b.content!r}"
         )
+
+
+def log_model_retry(model_name: str, retry_state: RetryCallState) -> None:
+    logger.log(
+        HTTP,
+        f"-> {model_name} retry {retry_state.attempt_number} after waiting for {retry_state.idle_for}",
+    )
 
 
 def init_active_model(model: Model, config: GenerateConfig) -> None:
@@ -1106,10 +1409,20 @@ def active_model() -> Model | None:
     return active_model_context_var.get(None)
 
 
+def init_model_roles(roles: dict[str, Model]) -> None:
+    _model_roles.set(roles)
+
+
+def model_roles() -> dict[str, Model]:
+    return _model_roles.get()
+
+
+active_model_context_var: ContextVar[Model | None] = ContextVar("active_model")
+
+_model_roles: ContextVar[dict[str, Model]] = ContextVar("model_roles", default={})
+
+
 # shared contexts for asyncio tasks
-active_model_context_var: ContextVar[Model] = ContextVar("active_model")
-
-
 def handle_sample_message_limit(input: str | list[ChatMessage]) -> None:
     from inspect_ai.log._samples import (
         active_sample_message_limit,
@@ -1181,6 +1494,10 @@ def set_model_usage(
             if total_usage.input_tokens_cache_read is None:
                 total_usage.input_tokens_cache_read = 0
             total_usage.input_tokens_cache_read += usage.input_tokens_cache_read
+        if usage.reasoning_tokens is not None:
+            if total_usage.reasoning_tokens is None:
+                total_usage.reasoning_tokens = 0
+            total_usage.reasoning_tokens += usage.reasoning_tokens
 
         model_usage[model] = total_usage
 

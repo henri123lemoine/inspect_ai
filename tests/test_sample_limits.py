@@ -1,6 +1,6 @@
-import asyncio
 from random import randint
 
+import anyio
 from test_helpers.utils import skip_if_no_openai, sleep_for_solver
 
 from inspect_ai import Task, eval
@@ -15,10 +15,11 @@ from inspect_ai.scorer._scorer import Scorer, scorer
 from inspect_ai.scorer._target import Target
 from inspect_ai.solver import Generate, TaskState, solver
 from inspect_ai.solver._solver import Solver
+from inspect_ai.util._concurrency import concurrency
 
 
 @solver
-def looping_solver(check_tokens: bool = False):
+def looping_solver(check_tokens: bool = False, sleep_for: float | None = None):
     async def solve(state: TaskState, generate: Generate):
         # first generate
         state = await generate(state)
@@ -29,8 +30,22 @@ def looping_solver(check_tokens: bool = False):
 
         # keep generating until we hit a limit
         while True:
+            if sleep_for:
+                await anyio.sleep(sleep_for)
             state.messages.append(state.user_prompt)
             state = await generate(state)
+
+        return state
+
+    return solve
+
+
+@solver
+def looping_concurrecy_solver():
+    async def solve(state: TaskState, generate: Generate):
+        # simulate waiting for shared resource
+        async with concurrency("shared-resource", 1):
+            await anyio.sleep(1)
 
         return state
 
@@ -50,11 +65,11 @@ def appending_solver():
 
 
 @solver
-def overwriting_solver(messages: int):
+def overwriting_solver():
     async def solve(state: TaskState, generate: Generate):
-        state.messages = [
-            ChatMessageUser(content="message") for _ in range(0, messages)
-        ]
+        # keep overwriting with an increasing number of messages until we hit a limit
+        while True:
+            state.messages = state.messages + [ChatMessageUser(content="message")]
 
         return state
 
@@ -65,7 +80,7 @@ def overwriting_solver(messages: int):
 def slow_scorer(seconds: int | None = 10) -> Scorer:
     async def score(state: TaskState, target: Target) -> Score:
         if seconds is not None:
-            await asyncio.sleep(seconds)
+            await anyio.sleep(seconds)
 
         return Score(value=1)
 
@@ -76,7 +91,7 @@ def check_message_limit(solver: Solver):
     message_limit = randint(1, 3) * 2
     task = Task(
         dataset=[Sample(input="Say Hello", target="Hello")],
-        solver=looping_solver(),
+        solver=solver,
         scorer=match(),
         message_limit=message_limit,
     )
@@ -96,7 +111,7 @@ def test_message_limit_append():
 
 
 def test_message_limit_overwrite():
-    check_message_limit(overwriting_solver(10))
+    check_message_limit(overwriting_solver())
 
 
 @skip_if_no_openai
@@ -169,6 +184,40 @@ def test_solver_timeout_not_scored():
         time_limit=2,
     )[0]
     assert log.status == "error"
+
+
+def test_working_limit():
+    working_limit = 3
+    log = eval(
+        Task(solver=looping_solver(sleep_for=1)),
+        model="mockllm/model",
+        working_limit=working_limit,
+    )[0]
+    check_working_limit_event(log, working_limit)
+
+
+def test_working_limit_reporting():
+    log = eval(
+        Task(
+            dataset=[Sample(id=id, input=f"Input for {id}") for id in range(0, 3)],
+            solver=looping_concurrecy_solver(),
+        ),
+        model="mockllm/model",
+    )[0]
+    assert log.samples
+    waiting_time = 0
+    for sample in log.samples:
+        waiting_time += sample.total_time - sample.working_time + 0.1
+    assert waiting_time > 3
+
+
+def check_working_limit_event(log: EvalLog, working_limit: int):
+    assert log.eval.config.working_limit == working_limit
+    assert log.samples
+    assert log.samples[0].total_time
+    assert log.samples[0].working_time
+    assert log.samples[0].total_time > log.samples[0].working_time
+    check_limit_event(log, "working")
 
 
 def check_limit_event(log: EvalLog, content: str) -> None:

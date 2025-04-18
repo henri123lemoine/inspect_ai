@@ -2,6 +2,7 @@ import inspect
 from logging import getLogger
 from typing import Any, Awaitable, Callable, TypeVar, cast
 
+from inspect_ai._util.interrupt import check_sample_interrupt
 from inspect_ai._util.registry import (
     RegistryInfo,
     is_registry_object,
@@ -115,15 +116,14 @@ class Plan(Solver):
                 with solver_transcript(self.finish, state) as st:
                     state = await self.finish(state, generate)
                     st.complete(state)
-
-            # mark completed
-            state.completed = True
+                check_sample_interrupt()
 
         finally:
             # always do cleanup if we have one
             if self.cleanup:
                 try:
                     await self.cleanup(state)
+                    check_sample_interrupt()
                 except Exception as ex:
                     logger.warning(f"Exception occurred during plan cleanup: {ex}")
 
@@ -164,7 +164,7 @@ def plan(*plan: PlanType | None, name: str | None = None, **attribs: Any) -> Any
                 plan_type,
                 plan,
                 RegistryInfo(
-                    type="plan",
+                    type="plan",  # type: ignore[arg-type]
                     name=plan_name,
                     metadata=dict(attribs=attribs, params=params),
                 ),
@@ -212,7 +212,9 @@ def plan_register(
     registry_add(
         plan,
         RegistryInfo(
-            type="plan", name=name, metadata=dict(attribs=attribs, params=params)
+            type="plan",  # type: ignore[arg-type]
+            name=name,
+            metadata=dict(attribs=attribs, params=params),
         ),
     )
     return plan
@@ -228,4 +230,4 @@ def plan_create(name: str, **kwargs: Any) -> Plan:
     Returns:
         Plan with registry info attribute
     """
-    return cast(Plan, registry_create("plan", name, **kwargs))
+    return registry_create("plan", name, **kwargs)
