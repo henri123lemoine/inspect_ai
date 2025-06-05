@@ -13,7 +13,7 @@ from inspect_ai.model import (
 @skip_if_no_vllm
 async def test_vllm_api() -> None:
     model = get_model(
-        "vllm/EleutherAI/pythia-70m",
+        "vllm/gpt2",
         config=GenerateConfig(
             max_tokens=1,
             seed=42,
