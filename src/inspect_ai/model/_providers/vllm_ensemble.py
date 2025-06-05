@@ -36,6 +36,12 @@ class VLLMEnsembleAPI(ModelAPI):
     2. Combining the logits using the specified combination function
     3. Sampling from the combined distribution
     4. Repeating until generation is complete
+
+    Performance optimizations:
+    - GPU tensor operations for better performance
+    - Parallel model calls for each token
+    - Batch processing support when possible
+    - Efficient device management
     """
 
     def __init__(
@@ -115,12 +121,44 @@ class VLLMEnsembleAPI(ModelAPI):
                 "Ensemble models must share the same tokenizer and vocabulary."
             )
 
+        # Determine device for tensor operations
+        self.device = self._get_model_device()
+        logger.info(f"Using device {self.device} for ensemble tensor operations")
+
+        # Cache for tokenization to avoid repeated encoding
+        self._tokenization_cache: dict[str, list[int]] = {}
+
+    def _get_model_device(self) -> torch.device:
+        """Get the device where the models are running."""
+        try:
+            # Try to get device from model1
+            if hasattr(self.model1, "llm_engine") and hasattr(
+                self.model1.llm_engine, "model_executor"
+            ):
+                model_executor = self.model1.llm_engine.model_executor
+                if hasattr(model_executor, "driver_worker"):
+                    device = model_executor.driver_worker.device
+                    return torch.device(device)
+        except Exception:
+            pass
+
+        # Fallback: check if CUDA is available
+        if torch.cuda.is_available():
+            return torch.device("cuda:0")
+        return torch.device("cpu")
+
     @override
     def close(self) -> None:
         """Close both models."""
         # VLLM doesn't provide an explicit close method, but we can delete the models
         del self.model1
         del self.model2
+        # Clear tokenization cache
+        self._tokenization_cache.clear()
+
+    def clear_cache(self) -> None:
+        """Clear the tokenization cache to free memory."""
+        self._tokenization_cache.clear()
 
     @override
     def max_connections(self) -> int:
@@ -196,12 +234,16 @@ class VLLMEnsembleAPI(ModelAPI):
         self, prompt: str, config: GenerateConfig
     ) -> tuple[str, int, int]:
         """Generate text using ensemble method with token-by-token logit combination."""
-        # Tokenize the prompt
-        input_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+        # Tokenize the prompt (use cache to avoid repeated encoding)
+        if prompt in self._tokenization_cache:
+            input_ids = self._tokenization_cache[prompt]
+        else:
+            input_ids = self.tokenizer.encode(prompt, add_special_tokens=False)
+            self._tokenization_cache[prompt] = input_ids
         input_tokens = len(input_ids)
 
-        # Convert to tensor (use CPU to avoid device issues)
-        current_ids = torch.tensor([input_ids])
+        # Convert to tensor on the appropriate device
+        current_ids = torch.tensor([input_ids], device=self.device)
 
         # Generation parameters
         max_tokens = config.max_tokens or DEFAULT_MAX_TOKENS
@@ -223,13 +265,22 @@ class VLLMEnsembleAPI(ModelAPI):
         generated_tokens = []
 
         for _ in range(max_tokens):
-            # Get logits from both models for the current sequence
-            logits1 = await self._get_next_token_logits(
+            # Get logits from both models in parallel
+            logits1_task = self._get_next_token_logits(
                 self.model1, current_ids[0].tolist()
             )
-            logits2 = await self._get_next_token_logits(
+            logits2_task = self._get_next_token_logits(
                 self.model2, current_ids[0].tolist()
             )
+
+            # Wait for both models to complete
+            logits1, logits2 = await asyncio.gather(logits1_task, logits2_task)
+
+            # Ensure logits are on the same device (avoid unnecessary copies)
+            if logits1.device != self.device:
+                logits1 = logits1.to(self.device)
+            if logits2.device != self.device:
+                logits2 = logits2.to(self.device)
 
             # Combine logits using the combination function
             combined_logits = self.combine_fn(logits1, logits2)
@@ -274,7 +325,9 @@ class VLLMEnsembleAPI(ModelAPI):
             generated_tokens.append(next_token)
 
             # Update current sequence
-            current_ids = torch.cat([current_ids, torch.tensor([[next_token]])], dim=1)
+            current_ids = torch.cat(
+                [current_ids, torch.tensor([[next_token]], device=self.device)], dim=1
+            )
 
         # Decode the generated tokens
         output_text = self.tokenizer.decode(generated_tokens, skip_special_tokens=True)
@@ -282,52 +335,65 @@ class VLLMEnsembleAPI(ModelAPI):
 
         return output_text, input_tokens, output_tokens
 
+    async def _generate_ensemble_batch(
+        self, prompts: list[str], config: GenerateConfig
+    ) -> list[tuple[str, int, int]]:
+        """Generate multiple samples efficiently using batch processing where possible."""
+        # For now, process sequentially but this could be optimized further
+        # by batching the tokenization and some tensor operations
+        results = []
+        for prompt in prompts:
+            result = await self._generate_ensemble(prompt, config)
+            results.append(result)
+        return results
+
     async def _get_next_token_logits(self, model, input_ids: list[int]) -> torch.Tensor:
-        """Get logits for the next token from a VLLM model using top-k logprobs."""
-        from vllm import SamplingParams
+        """Get logits for the next token from a VLLM model."""
 
         def _get_logits():
-            # Use VLLM's generate method with logprobs (limited to 20 by VLLM)
-            sampling_params = SamplingParams(
-                max_tokens=1,
-                temperature=1.0,
-                logprobs=20,  # VLLM's maximum allowed logprobs
-            )
-
-            # Convert input_ids back to text for generation
-            prompt = self.tokenizer.decode(input_ids, skip_special_tokens=True)
-            outputs = model.generate([prompt], sampling_params)
-
-            # Extract logprobs from the output
-            output = outputs[0]
-            if output.outputs and output.outputs[0].logprobs:
-                # Get the logprobs for the first generated token
-                token_logprobs = output.outputs[0].logprobs[0]
-
-                # Create a tensor with very low logits for all vocabulary tokens
-                vocab_size = len(self.tokenizer)
-                logits = torch.full(
-                    (vocab_size,), -100.0
-                )  # Very low logits for unseen tokens
-
-                # Fill in the available logprobs (top 20)
-                for token_id, logprob in token_logprobs.items():
-                    # Extract the actual logprob value (logprob is a Logprob object)
-                    logprob_value = (
-                        logprob.logprob
-                        if hasattr(logprob, "logprob")
-                        else float(logprob)
-                    )
-                    logits[token_id] = logprob_value
-
-                return logits
-            else:
-                # Fallback: return uniform distribution
-                vocab_size = len(self.tokenizer)
-                return torch.zeros(vocab_size)
+            # For now, just use the logprobs method for stability
+            return self._get_logits_from_logprobs(model, input_ids)
 
         # Run in thread to avoid blocking
         return await asyncio.to_thread(_get_logits)
+
+    def _get_logits_from_logprobs(self, model, input_ids: list[int]) -> torch.Tensor:
+        """Fallback method using VLLM's logprobs (limited to top-k)."""
+        from vllm import SamplingParams
+
+        # Use VLLM's generate method with maximum logprobs
+        sampling_params = SamplingParams(
+            max_tokens=1,
+            temperature=1.0,
+            logprobs=20,  # VLLM's maximum allowed logprobs
+        )
+
+        # Convert input_ids back to text for generation
+        prompt = self.tokenizer.decode(input_ids, skip_special_tokens=True)
+        outputs = model.generate([prompt], sampling_params)
+
+        # Extract logprobs from the output
+        output = outputs[0]
+        if output.outputs and output.outputs[0].logprobs:
+            # Get the logprobs for the first generated token
+            token_logprobs = output.outputs[0].logprobs[0]
+
+            # Create a tensor with very low logits for all vocabulary tokens
+            vocab_size = len(self.tokenizer)
+            logits = torch.full((vocab_size,), -100.0)
+
+            # Fill in the available logprobs (top-k)
+            for token_id, logprob in token_logprobs.items():
+                logprob_value = (
+                    logprob.logprob if hasattr(logprob, "logprob") else float(logprob)
+                )
+                logits[token_id] = logprob_value
+
+            return logits
+        else:
+            # Fallback: return uniform distribution
+            vocab_size = len(self.tokenizer)
+            return torch.zeros(vocab_size)
 
 
 # Ensemble combination functions operating on logits
