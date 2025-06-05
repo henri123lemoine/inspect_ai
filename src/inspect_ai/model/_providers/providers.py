@@ -146,6 +146,20 @@ def vllm() -> type[ModelAPI]:
     return VLLMAPI
 
 
+@modelapi(name="vllm-ensemble")
+def vllm_ensemble() -> type[ModelAPI]:
+    # Check for required dependencies (VLLM and PyTorch)
+    try:
+        import torch  # type: ignore  # noqa: F401
+        import vllm  # type: ignore  # noqa: F401
+    except ImportError:
+        raise pip_dependency_error("VLLM Ensemble", ["vllm", "torch"])
+
+    from .vllm_ensemble import VLLMEnsembleAPI
+
+    return VLLMEnsembleAPI
+
+
 @modelapi(name="cf")
 def cf() -> type[ModelAPI]:
     from .cloudflare import CloudFlareAPI
