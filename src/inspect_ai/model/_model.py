@@ -19,6 +19,7 @@ from typing import (
     cast,
 )
 
+from pydantic import BaseModel
 from pydantic_core import to_jsonable_python
 from tenacity import (
     RetryCallState,
@@ -57,6 +58,11 @@ from inspect_ai.tool._tool import ToolSource
 from inspect_ai.tool._tool_call import ToolCallModelInputHints
 from inspect_ai.tool._tool_def import ToolDef, tool_defs
 from inspect_ai.util import concurrency
+from inspect_ai.util._limit import (
+    check_message_limit,
+    check_token_limit,
+    record_model_usage,
+)
 
 from ._cache import CacheEntry, CachePolicy, cache_fetch, cache_store
 from ._call_tools import (
@@ -355,11 +361,15 @@ class Model:
         Returns:
            ModelOutput
         """
-        # if we are the default model then enforce message limit if it
-        # exists (raise an exception if it is exceeded)
+        # if we are the default model then update the displayed message count
         is_active_model = self == active_model()
         if is_active_model:
-            handle_sample_message_limit(input)
+            set_total_messages(input)
+
+        # check message limit, raise exception if we're already at the limit to prevent
+        # a wasteful generate()
+        conversation_length = len(input) if isinstance(input, list) else 1
+        check_message_limit(conversation_length, raise_for_equal=True)
 
         # base config for this model
         base_config = self.config
@@ -393,36 +403,32 @@ class Model:
         start_time = datetime.now()
         working_start = sample_working_time()
         async with self._connection_concurrency(config):
-            from inspect_ai.log._samples import track_active_sample_retries
-
             # generate
-            with track_active_sample_retries():
-                output = await self._generate(
-                    input=input,
-                    tools=tools,
-                    tool_choice=tool_choice,
-                    config=config,
-                    cache=cache,
-                )
+            output, event = await self._generate(
+                input=input,
+                tools=tools,
+                tool_choice=tool_choice,
+                config=config,
+                cache=cache,
+            )
 
             # update the most recent ModelEvent with the actual start/completed
             # times as well as a computation of working time (events are
             # created _after_ the call to _generate, potentially in response
             # to retries, so they need their timestamp updated so it accurately
             # reflects the full start/end time which we know here)
-            from inspect_ai.log._transcript import ModelEvent, transcript
+            from inspect_ai.log._transcript import ModelEvent
 
-            last_model_event = transcript().find_last_event(ModelEvent)
-            if last_model_event:
-                last_model_event.timestamp = start_time
-                last_model_event.working_start = working_start
-                completed = datetime.now()
-                last_model_event.completed = completed
-                last_model_event.working_time = (
-                    output.time
-                    if output.time is not None
-                    else (completed - start_time).total_seconds()
-                )
+            assert isinstance(event, ModelEvent)
+            event.timestamp = start_time
+            event.working_start = working_start
+            completed = datetime.now()
+            event.completed = completed
+            event.working_time = (
+                output.time
+                if output.time is not None
+                else (completed - start_time).total_seconds()
+            )
 
             # return output
             return output
@@ -483,9 +489,12 @@ class Model:
         tool_choice: ToolChoice | None,
         config: GenerateConfig,
         cache: bool | CachePolicy = False,
-    ) -> ModelOutput:
+    ) -> tuple[ModelOutput, BaseModel]:
+        from inspect_ai.log._samples import track_active_model_event
+        from inspect_ai.log._transcript import ModelEvent
+
         # default to 'auto' for tool_choice (same as underlying model apis)
-        tool_choice = tool_choice if tool_choice else "auto"
+        tool_choice = tool_choice if tool_choice is not None else "auto"
 
         # resolve top level tool source
         if isinstance(tools, ToolSource):
@@ -572,7 +581,10 @@ class Model:
             stop=stop,
             before_sleep=functools.partial(log_model_retry, self.api.model_name),
         )
-        async def generate() -> ModelOutput:
+        async def generate() -> tuple[ModelOutput, BaseModel]:
+            # type-checker can't see that we made sure tool_choice is not none in the outer frame
+            assert tool_choice is not None
+
             check_sample_interrupt()
 
             cache_entry: CacheEntry | None
@@ -593,7 +605,7 @@ class Model:
                 )
                 existing = cache_fetch(cache_entry)
                 if isinstance(existing, ModelOutput):
-                    self._record_model_interaction(
+                    _, event = self._record_model_interaction(
                         input=input,
                         tools=tools_info,
                         tool_choice=tool_choice,
@@ -602,7 +614,7 @@ class Model:
                         output=existing,
                         call=None,
                     )
-                    return existing
+                    return existing, event
             else:
                 cache_entry = None
 
@@ -611,7 +623,7 @@ class Model:
 
             # record the interaction before the call to generate
             # (we'll update it with the results once we have them)
-            complete = self._record_model_interaction(
+            complete, event = self._record_model_interaction(
                 input=input,
                 tools=tools_info,
                 tool_choice=tool_choice,
@@ -622,12 +634,14 @@ class Model:
             with trace_action(logger, "Model", f"generate ({str(self)})"):
                 time_start = time.monotonic()
                 try:
-                    result = await self.api.generate(
-                        input=input,
-                        tools=tools_info,
-                        tool_choice=tool_choice,
-                        config=config,
-                    )
+                    assert isinstance(event, ModelEvent)
+                    with track_active_model_event(event):
+                        result = await self.api.generate(
+                            input=input,
+                            tools=tools_info,
+                            tool_choice=tool_choice,
+                            config=config,
+                        )
                 finally:
                     time_elapsed = time.monotonic() - time_start
 
@@ -666,7 +680,7 @@ class Model:
             # record usage
             if output.usage:
                 # record usage
-                record_model_usage(f"{self}", output.usage)
+                record_and_check_model_usage(f"{self}", output.usage)
 
                 # send telemetry if its hooked up
                 await send_telemetry(
@@ -677,18 +691,18 @@ class Model:
             if cache and cache_entry:
                 cache_store(entry=cache_entry, output=output)
 
-            return output
+            return output, event
 
         # call the model (this will so retries, etc., so report waiting time
         # as elapsed time - actual time for successful model call)
         time_start = time.monotonic()
-        model_output = await generate()
+        model_output, event = await generate()
         total_time = time.monotonic() - time_start
         if model_output.time:
             report_sample_waiting_time(total_time - model_output.time)
 
         # return results
-        return model_output
+        return model_output, event
 
     def should_retry(self, ex: BaseException) -> bool:
         if isinstance(ex, Exception):
@@ -760,7 +774,7 @@ class Model:
         cache: Literal["read", "write"] | None,
         output: ModelOutput | None = None,
         call: ModelCall | None = None,
-    ) -> Callable[[ModelOutput | Exception, ModelCall | None], None]:
+    ) -> tuple[Callable[[ModelOutput | Exception, ModelCall | None], None], BaseModel]:
         from inspect_ai.log._transcript import ModelEvent, transcript
 
         # create event and add it to the transcript
@@ -800,7 +814,7 @@ class Model:
         if output:
             complete(output, call)
 
-        return complete
+        return complete, event
 
 
 class ModelName:
@@ -1223,9 +1237,10 @@ def tool_result_images_as_user_message(
 
     Tool responses will have images replaced with "Image content is included below.", and the new user message will contain the images.
     """
-    init_accum: ImagesAccumulator = ([], [], [])
     chat_messages, user_message_content, tool_call_ids = functools.reduce(
-        tool_result_images_reducer, messages, init_accum
+        tool_result_images_reducer,
+        messages,
+        (list[ChatMessage](), list[Content](), list[str]()),
     )
     # if the last message was a tool result, we may need to flush the pending stuff here
     return maybe_adding_user_message(chat_messages, user_message_content, tool_call_ids)
@@ -1251,9 +1266,10 @@ def tool_result_images_reducer(
         and isinstance(message.content, list)
         and any([isinstance(c, ContentImage) for c in message.content])
     ):
-        init_accum: ImageContentAccumulator = ([], [])
         new_user_message_content, edited_tool_message_content = functools.reduce(
-            tool_result_image_content_reducer, message.content, init_accum
+            tool_result_image_content_reducer,
+            message.content,
+            (list[Content](), list[Content]()),
         )
 
         return (
@@ -1391,7 +1407,7 @@ def combine_messages(
 def log_model_retry(model_name: str, retry_state: RetryCallState) -> None:
     logger.log(
         HTTP,
-        f"-> {model_name} retry {retry_state.attempt_number} after waiting for {retry_state.idle_for}",
+        f"-> {model_name} retry {retry_state.attempt_number} (retrying in {retry_state.upcoming_sleep:,.0f} seconds)",
     )
 
 
@@ -1423,20 +1439,10 @@ _model_roles: ContextVar[dict[str, Model]] = ContextVar("model_roles", default={
 
 
 # shared contexts for asyncio tasks
-def handle_sample_message_limit(input: str | list[ChatMessage]) -> None:
-    from inspect_ai.log._samples import (
-        active_sample_message_limit,
-        set_active_sample_total_messages,
-    )
-    from inspect_ai.solver._limit import SampleLimitExceededError
+def set_total_messages(input: str | list[ChatMessage]) -> None:
+    from inspect_ai.log._samples import set_active_sample_total_messages
 
     total_messages = 1 if isinstance(input, str) else len(input)
-    message_limit = active_sample_message_limit()
-    if message_limit is not None:
-        if total_messages >= message_limit:
-            raise SampleLimitExceededError(
-                "message", value=total_messages, limit=message_limit
-            )
 
     # set total messages
     set_active_sample_total_messages(total_messages)
@@ -1450,16 +1456,13 @@ def init_sample_model_usage() -> None:
     sample_model_usage_context_var.set({})
 
 
-def record_model_usage(model: str, usage: ModelUsage) -> None:
-    from inspect_ai.log._samples import (
-        active_sample_token_limit,
-        set_active_sample_total_tokens,
-    )
-    from inspect_ai.solver._limit import SampleLimitExceededError
+def record_and_check_model_usage(model: str, usage: ModelUsage) -> None:
+    from inspect_ai.log._samples import set_active_sample_total_tokens
 
     # record usage
     set_model_usage(model, usage, sample_model_usage_context_var.get(None))
     set_model_usage(model, usage, model_usage_context_var.get(None))
+    record_model_usage(usage)
 
     # compute total tokens
     total_tokens = sample_total_tokens()
@@ -1467,38 +1470,15 @@ def record_model_usage(model: str, usage: ModelUsage) -> None:
     # update active sample
     set_active_sample_total_tokens(total_tokens)
 
-    # check for token limit overflow and raise
-    token_limit = active_sample_token_limit()
-    if token_limit is not None:
-        if total_tokens > token_limit:
-            raise SampleLimitExceededError(
-                "token", value=total_tokens, limit=token_limit
-            )
+    check_token_limit()
 
 
 def set_model_usage(
     model: str, usage: ModelUsage, model_usage: dict[str, ModelUsage] | None
 ) -> None:
     if model_usage is not None:
-        total_usage: ModelUsage | None = model_usage.get(model, None)
-        if not total_usage:
-            total_usage = ModelUsage()
-        total_usage.input_tokens += usage.input_tokens
-        total_usage.output_tokens += usage.output_tokens
-        total_usage.total_tokens += usage.total_tokens
-        if usage.input_tokens_cache_write is not None:
-            if total_usage.input_tokens_cache_write is None:
-                total_usage.input_tokens_cache_write = 0
-            total_usage.input_tokens_cache_write += usage.input_tokens_cache_write
-        if usage.input_tokens_cache_read is not None:
-            if total_usage.input_tokens_cache_read is None:
-                total_usage.input_tokens_cache_read = 0
-            total_usage.input_tokens_cache_read += usage.input_tokens_cache_read
-        if usage.reasoning_tokens is not None:
-            if total_usage.reasoning_tokens is None:
-                total_usage.reasoning_tokens = 0
-            total_usage.reasoning_tokens += usage.reasoning_tokens
-
+        total_usage = model_usage.get(model, ModelUsage())
+        total_usage += usage
         model_usage[model] = total_usage
 
 

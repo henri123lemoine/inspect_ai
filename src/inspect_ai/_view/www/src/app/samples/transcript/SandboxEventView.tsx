@@ -1,6 +1,5 @@
 import { SandboxEvent } from "../../../@types/log";
 import ExpandablePanel from "../../../components/ExpandablePanel";
-import { MarkdownDiv } from "../../../components/MarkdownDiv";
 import { ApplicationIcons } from "../../appearance/icons";
 import { MetaDataGrid } from "../../content/MetaDataGrid";
 import { EventPanel } from "./event/EventPanel";
@@ -8,12 +7,13 @@ import { EventSection } from "./event/EventSection";
 
 import clsx from "clsx";
 import { FC } from "react";
+import { RenderedContent } from "../../content/RenderedContent";
 import styles from "./SandboxEventView.module.css";
 import { formatTiming } from "./event/utils";
+import { EventNode } from "./types";
 
 interface SandboxEventViewProps {
-  id: string;
-  event: SandboxEvent;
+  eventNode: EventNode<SandboxEvent>;
   className?: string | string[];
 }
 
@@ -21,24 +21,25 @@ interface SandboxEventViewProps {
  * Renders the SandboxEventView component.
  */
 export const SandboxEventView: FC<SandboxEventViewProps> = ({
-  id,
-  event,
+  eventNode,
   className,
 }) => {
+  const event = eventNode.event;
   return (
     <EventPanel
-      id={id}
+      eventNodeId={eventNode.id}
+      depth={eventNode.depth}
       className={className}
       title={`Sandbox: ${event.action}`}
       icon={ApplicationIcons.sandbox}
       subTitle={formatTiming(event.timestamp, event.working_start)}
     >
       {event.action === "exec" ? (
-        <ExecView id={`${id}-exec`} event={event} />
+        <ExecView id={`${eventNode.id}-exec`} event={event} />
       ) : event.action === "read_file" ? (
-        <ReadFileView id={`${id}-read-file`} event={event} />
+        <ReadFileView id={`${eventNode.id}-read-file`} event={event} />
       ) : (
-        <WriteFileView id={`${id}-write-file`} event={event} />
+        <WriteFileView id={`${eventNode.id}-write-file`} event={event} />
       )}
     </EventPanel>
   );
@@ -57,7 +58,7 @@ const ExecView: FC<ExecViewProps> = ({ id, event }) => {
   const options = event.options;
   const input = event.input;
   const result = event.result;
-  const output = event.output;
+  const output = event.output ? event.output.trim() : undefined;
 
   return (
     <div className={clsx(styles.exec)}>
@@ -68,7 +69,7 @@ const ExecView: FC<ExecViewProps> = ({ id, event }) => {
             {input !== null ? input?.trim() : undefined}
           </pre>
 
-          {options !== null ? (
+          {options !== null && Object.keys(options).length > 0 ? (
             <EventSection title={`Options`}>
               <MetaDataGrid
                 entries={options as Record<string, unknown>}
@@ -78,14 +79,23 @@ const ExecView: FC<ExecViewProps> = ({ id, event }) => {
           ) : undefined}
         </div>
       </EventSection>
-      <EventSection title={`Result`}>
-        {output ? (
-          <ExpandablePanel id={`${id}-output`} collapse={false}>
-            <MarkdownDiv markdown={output} />
-          </ExpandablePanel>
-        ) : undefined}
-        <div className={clsx(styles.result)}>Exited with code {result}</div>
-      </EventSection>
+      {output || (result !== null && result !== 0) ? (
+        <EventSection title={`Result`}>
+          {output ? (
+            <ExpandablePanel id={`${id}-output`} collapse={false}>
+              <RenderedContent
+                id={`${id}-output-content`}
+                entry={{ name: "sandbox_output", value: output }}
+              />
+            </ExpandablePanel>
+          ) : undefined}
+          {result !== 0 ? (
+            <div className={clsx(styles.result, "text-size-base")}>
+              (exited with code {result})
+            </div>
+          ) : undefined}
+        </EventSection>
+      ) : undefined}
     </div>
   );
 };

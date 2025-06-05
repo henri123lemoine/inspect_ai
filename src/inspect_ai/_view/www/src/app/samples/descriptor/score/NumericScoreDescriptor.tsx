@@ -1,6 +1,7 @@
 import { Value2 } from "../../../../@types/log";
 import { kScoreTypeNumeric } from "../../../../constants";
 import { formatDecimalNoTrailingZeroes } from "../../../../utils/format";
+import { compareWithNan } from "../../../../utils/numeric";
 import { ScoreDescriptor } from "../types";
 
 export const numericScoreDescriptor = (values: Value2[]): ScoreDescriptor => {
@@ -13,10 +14,14 @@ export const numericScoreDescriptor = (values: Value2[]): ScoreDescriptor => {
     min: Math.min(...onlyNumeric),
     max: Math.max(...onlyNumeric),
     compare: (a, b) => {
+      // Non numerics could happen if some scores are errors
       if (typeof a.value === "number" && typeof b.value === "number") {
-        return a.value - b.value;
+        return compareWithNan(a.value, b.value);
+      } else if (typeof a.value === "number" && typeof b.value !== "number") {
+        return -1;
+      } else if (typeof a.value !== "number" && typeof b.value === "number") {
+        return 1;
       } else {
-        console.warn("Comparing non-numerics using a numeric score descriptor");
         return 0;
       }
     },

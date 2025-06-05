@@ -28,7 +28,7 @@ from inspect_ai._util.error import PrerequisiteError
 from inspect_ai._util.file import absolute_file_path
 from inspect_ai._util.logger import warn_once
 from inspect_ai._util.platform import platform_init
-from inspect_ai._util.registry import registry_lookup
+from inspect_ai._util.registry import registry_lookup, registry_package_name
 from inspect_ai.approval._apply import init_tool_approval
 from inspect_ai.approval._policy import (
     ApprovalPolicy,
@@ -90,6 +90,7 @@ def eval(
     sample_id: str | int | list[str] | list[int] | list[str | int] | None = None,
     epochs: int | Epochs | None = None,
     fail_on_error: bool | float | None = None,
+    retry_on_error: int | None = None,
     debug_errors: bool | None = None,
     message_limit: int | None = None,
     token_limit: int | None = None,
@@ -100,9 +101,11 @@ def eval(
     max_subprocesses: int | None = None,
     max_sandboxes: int | None = None,
     log_samples: bool | None = None,
+    log_realtime: bool | None = None,
     log_images: bool | None = None,
     log_buffer: int | None = None,
     log_shared: bool | int | None = None,
+    log_header_only: bool | None = None,
     score: bool = True,
     score_display: bool | None = None,
     **kwargs: Unpack[GenerateConfigArgs],
@@ -144,13 +147,15 @@ def eval(
             to "eval", the native high-performance format).
         limit: Limit evaluated samples
             (defaults to all samples).
-        sample_id: Evaluate specific sample(s) from the dataset.
+        sample_id: Evaluate specific sample(s) from the dataset. Use plain ids or preface with task names as required to disambiguate ids across tasks (e.g. `popularity:10`).
         epochs: Epochs to repeat samples for and optional score
             reducer function(s) used to combine sample scores (defaults to "mean")
         fail_on_error: `True` to fail on first sample error
             (default); `False` to never fail on sample errors; Value between 0 and 1
             to fail if a proportion of total samples fails. Value greater than 1 to fail
             eval if a count of samples fails.
+        retry_on_error: Number of times to retry samples if they encounter errors
+            (by default, no retries occur).
         debug_errors: Raise task errors (rather than logging them)
             so they can be debugged (defaults to False).
         message_limit: Limit on total messages used for each sample.
@@ -168,6 +173,7 @@ def eval(
         max_sandboxes: Maximum number of sandboxes (per-provider)
             to run in parallel.
         log_samples: Log detailed samples and scores (defaults to True)
+        log_realtime: Log events in realtime (enables live viewing of samples in inspect view). Defaults to True.
         log_images: Log base64 encoded version of images,
             even if specified as a filename or URL (defaults to False)
         log_buffer: Number of samples to buffer before writing log file.
@@ -176,6 +182,8 @@ def eval(
         log_shared: Sync sample events to log directory so that users on other systems
             can see log updates in realtime (defaults to no syncing). Specify `True`
             to sync every 10 seconds, otherwise an integer to sync every `n` seconds.
+        log_header_only: If `True`, the function should return only log headers rather
+            than full logs with samples (defaults to `False`).
         score: Score output (defaults to True)
         score_display: Show scoring metrics in realtime (defaults to True)
         **kwargs: Model generation options.
@@ -214,6 +222,7 @@ def eval(
                 sample_id=sample_id,
                 epochs=epochs,
                 fail_on_error=fail_on_error,
+                retry_on_error=retry_on_error,
                 debug_errors=debug_errors,
                 message_limit=message_limit,
                 token_limit=token_limit,
@@ -224,9 +233,11 @@ def eval(
                 max_subprocesses=max_subprocesses,
                 max_sandboxes=max_sandboxes,
                 log_samples=log_samples,
+                log_realtime=log_realtime,
                 log_images=log_images,
                 log_buffer=log_buffer,
                 log_shared=log_shared,
+                log_header_only=log_header_only,
                 score=score,
                 score_display=score_display,
                 **kwargs,
@@ -266,6 +277,7 @@ async def eval_async(
     sample_id: str | int | list[str] | list[int] | list[str | int] | None = None,
     epochs: int | Epochs | None = None,
     fail_on_error: bool | float | None = None,
+    retry_on_error: int | None = None,
     debug_errors: bool | None = None,
     message_limit: int | None = None,
     token_limit: int | None = None,
@@ -276,9 +288,11 @@ async def eval_async(
     max_subprocesses: int | None = None,
     max_sandboxes: int | None = None,
     log_samples: bool | None = None,
+    log_realtime: bool | None = None,
     log_images: bool | None = None,
     log_buffer: int | None = None,
     log_shared: bool | int | None = None,
+    log_header_only: bool | None = None,
     score: bool = True,
     score_display: bool | None = None,
     **kwargs: Unpack[GenerateConfigArgs],
@@ -309,12 +323,14 @@ async def eval_async(
         log_dir: Output path for logging results (defaults to file log in ./logs directory).
         log_format: Format for writing log files (defaults to "eval", the native high-performance format).
         limit: Limit evaluated samples (defaults to all samples).
-        sample_id: Evaluate specific sample(s) from the dataset.
+        sample_id: Evaluate specific sample(s) from the dataset. Use plain ids or preface with task names as required to disambiguate ids across tasks (e.g. `popularity:10`).
         epochs: Epochs to repeat samples for and optional score
             reducer function(s) used to combine sample scores (defaults to "mean")
         fail_on_error: `True` to fail on first sample error
             (default); `False` to never fail on sample errors; Value between 0 and 1
             to fail if a proportion of total samples fails. Value greater than 1 to fail eval if a count of samples fails.
+        retry_on_error: Number of times to retry samples if they encounter errors
+            (by default, no retries occur).
         debug_errors: Raise task errors (rather than logging them) so they can be debugged (defaults to False).
         message_limit: Limit on total messages used for each sample.
         token_limit: Limit on total tokens used for each sample.
@@ -328,11 +344,14 @@ async def eval_async(
         max_subprocesses: Maximum number of subprocesses to run in parallel (default is os.cpu_count())
         max_sandboxes: Maximum number of sandboxes (per-provider) to run in parallel.
         log_samples: Log detailed samples and scores (defaults to True)
+        log_realtime: Log events in realtime (enables live viewing of samples in inspect view). Defaults to True.
         log_images: Log base64 encoded version of images, even if specified as a filename or URL (defaults to False)
         log_buffer: Number of samples to buffer before writing log file.
            If not specified, an appropriate default for the format and filesystem is
            chosen (10 for most all cases, 100 for JSON logs on remote filesystems).
-        log_shared: Indicate that the log directory is shared, which results in additional syncing of realtime log data for Inspect View.
+        log_shared: Indicate that the log directory is shared, which results in additional
+        syncing of realtime log data for Inspect View.
+        log_header_only: If `True`, the function should return only log headers rather than full logs with samples (defaults to `False`).
         score: Score output (defaults to True)
         score_display: Show scoring metrics in realtime (defaults to True)
         **kwargs: Model generation options.
@@ -420,6 +439,9 @@ async def eval_async(
         # resolve log_shared
         log_shared = DEFAULT_LOG_SHARED if log_shared is True else log_shared
 
+        # resolve header only
+        log_header_only = log_header_only is True
+
         # validate that --log-shared can't use used with 'json' format
         if log_shared and log_format == JSON_LOG_FORMAT:
             raise PrerequisiteError(
@@ -455,6 +477,7 @@ async def eval_async(
             else None,
             approval=config_from_approval_policies(approval) if approval else None,
             fail_on_error=fail_on_error,
+            retry_on_error=retry_on_error,
             message_limit=message_limit,
             token_limit=token_limit,
             time_limit=time_limit,
@@ -465,6 +488,7 @@ async def eval_async(
             max_sandboxes=max_sandboxes,
             sandbox_cleanup=sandbox_cleanup,
             log_samples=log_samples,
+            log_realtime=log_realtime,
             log_images=log_images,
             log_buffer=log_buffer,
             log_shared=log_shared,
@@ -493,6 +517,7 @@ async def eval_async(
                         eval_config=eval_config,
                         eval_sandbox=sandbox,
                         recorder=recorder,
+                        header_only=log_header_only,
                         epochs_reducer=epochs_reducer,
                         solver=solver,
                         tags=tags,
@@ -518,6 +543,7 @@ async def eval_async(
                 eval_config=eval_config,
                 eval_sandbox=sandbox,
                 recorder=recorder,
+                header_only=log_header_only,
                 epochs_reducer=epochs_reducer,
                 solver=solver,
                 tags=tags,
@@ -551,8 +577,10 @@ def eval_retry(
     trace: bool | None = None,
     display: DisplayType | None = None,
     fail_on_error: bool | float | None = None,
+    retry_on_error: int | None = None,
     debug_errors: bool | None = None,
     log_samples: bool | None = None,
+    log_realtime: bool | None = None,
     log_images: bool | None = None,
     log_buffer: int | None = None,
     log_shared: bool | int | None = None,
@@ -589,9 +617,12 @@ def eval_retry(
             (default); `False` to never fail on sample errors; Value between 0 and 1
             to fail if a proportion of total samples fails. Value greater than 1 to fail
             eval if a count of samples fails.
+        retry_on_error: Number of times to retry samples if they encounter errors
+            (by default, no retries occur).
         debug_errors: Raise task errors (rather than logging them)
             so they can be debugged (defaults to False).
         log_samples: Log detailed samples and scores (defaults to True)
+        log_realtime: Log events in realtime (enables live viewing of samples in inspect view). Defaults to True.
         log_images: Log base64 encoded version of images,
             even if specified as a filename or URL (defaults to False)
         log_buffer: Number of samples to buffer before writing log file.
@@ -631,8 +662,10 @@ def eval_retry(
             max_sandboxes=max_sandboxes,
             sandbox_cleanup=sandbox_cleanup,
             fail_on_error=fail_on_error,
+            retry_on_error=retry_on_error,
             debug_errors=debug_errors,
             log_samples=log_samples,
+            log_realtime=log_realtime,
             log_images=log_images,
             log_buffer=log_buffer,
             log_shared=log_shared,
@@ -658,8 +691,10 @@ async def eval_retry_async(
     max_sandboxes: int | None = None,
     sandbox_cleanup: bool | None = None,
     fail_on_error: bool | float | None = None,
+    retry_on_error: int | None = None,
     debug_errors: bool | None = None,
     log_samples: bool | None = None,
+    log_realtime: bool | None = None,
     log_images: bool | None = None,
     log_buffer: int | None = None,
     log_shared: bool | int | None = None,
@@ -672,46 +707,41 @@ async def eval_retry_async(
     """Retry a previously failed evaluation task.
 
     Args:
-        tasks: (str | EvalLogInfo | EvalLog | list[str] | list[EvalLogInfo] | list[EvalLog]):
-            Log files for task(s) to retry.
-        log_level (str | None): Level for logging to the console: "debug", "http", "sandbox",
+        tasks: Log files for task(s) to retry.
+        log_level: Level for logging to the console: "debug", "http", "sandbox",
           "info", "warning", "error", or "critical" (defaults to "warning")
-        log_level_transcript (str | None): Level for logging to the log file (defaults to "info")
-        log_dir (str | None): Output path for logging results
-           (defaults to file log in ./logs directory).
-        log_format (Literal["eval", "json"] | None): Format for writing log files (defaults
-           to "eval", the native high-performance format).
-        max_samples (int | None): Maximum number of samples to run in parallel
+        log_level_transcript: Level for logging to the log file (defaults to "info")
+        log_dir: Output path for logging results (defaults to file log in ./logs directory).
+        log_format: Format for writing log files (defaults to "eval", the native high-performance format).
+        max_samples: Maximum number of samples to run in parallel
            (default is max_connections)
-        max_tasks (int | None): Maximum number of tasks to run in parallel
-           (default is 1)
-        max_subprocesses (int): Maximum number of subprocesses to
-           run in parallel (default is os.cpu_count())
-        max_sandboxes (int): Maximum number of sandboxes (per-provider) to run in parallel.
-        sandbox_cleanup (bool | None): Cleanup sandbox environments after task completes
+        max_tasks: Maximum number of tasks to run in parallel (default is 1)
+        max_subprocesses: Maximum number of subprocesses to run in parallel (default is os.cpu_count())
+        max_sandboxes: Maximum number of sandboxes (per-provider) to run in parallel.
+        sandbox_cleanup: Cleanup sandbox environments after task completes
            (defaults to True)
-        fail_on_error (bool | float | None): `True` to fail on first sample error
+        fail_on_error: `True` to fail on first sample error
            (default); `False` to never fail on sample errors; Value between 0 and 1
            to fail if a proportion of total samples fails. Value greater than 1 to fail
            eval if a count of samples fails.
-        debug_errors (bool | None): Raise task errors (rather than logging them)
+        retry_on_error: Number of times to retry samples if they encounter errors
+           (by default, no retries occur).
+        debug_errors: Raise task errors (rather than logging them)
            so they can be debugged (defaults to False).
-        log_samples: (bool | None): Log detailed samples and scores (defaults to True)
-        log_images: (bool | None): Log base64 encoded version of images,
+        log_samples: Log detailed samples and scores (defaults to True)
+        log_realtime: Log events in realtime (enables live viewing of samples in inspect view). Defaults to True.
+        log_images: Log base64 encoded version of images,
            even if specified as a filename or URL (defaults to False)
-        log_buffer: (int | None): Number of samples to buffer before writing log file.
+        log_buffer: Number of samples to buffer before writing log file.
            If not specified, an appropriate default for the format and filesystem is
            chosen (10 for most all cases, 100 for JSON logs on remote filesystems).
         log_shared: Indicate that the log directory is shared, which results in
             additional syncing of realtime log data for Inspect View.
-        score (bool): Score output (defaults to True)
-        score_display (bool | None): Show scoring metrics in realtime (defaults to True)
-        max_retries (int | None):
-           Maximum number of times to retry request.
-        timeout: (int | None):
-           Request timeout (in seconds)
-        max_connections (int | None):
-           Maximum number of concurrent connections to Model API (default is per Model API)
+        score: Score output (defaults to True)
+        score_display: Show scoring metrics in realtime (defaults to True)
+        max_retries: Maximum number of times to retry request.
+        timeout: Request timeout (in seconds)
+        max_connections: Maximum number of concurrent connections to Model API (default is per Model API)
 
     Returns:
         List of EvalLog (one for each task)
@@ -752,7 +782,15 @@ async def eval_retry_async(
             task = f"{task_file}@{task_name}"
         else:
             if registry_lookup("task", task_name) is None:
-                raise FileNotFoundError(f"Task '{task_name}' not found.")
+                # if this object is in a package then let the user know
+                # that they need to register it to work with eval-retry
+                package_name = registry_package_name(task_name)
+                if package_name is not None:
+                    raise FileNotFoundError(
+                        f"Task '{task_name}' is located in package '{package_name}' but has not been registered so cannot be retried. See https://inspect.aisi.org.uk/tasks.html#packaging for additional details on registering tasks in packages."
+                    )
+                else:
+                    raise FileNotFoundError(f"Task '{task_name}' not found.")
             task = task_name
 
         # see if there is solver spec in the eval log
@@ -802,8 +840,18 @@ async def eval_retry_async(
             if fail_on_error is not None
             else eval_log.eval.config.fail_on_error
         )
+        retry_on_error = (
+            retry_on_error
+            if retry_on_error is not None
+            else eval_log.eval.config.retry_on_error
+        )
         log_samples = (
             log_samples if log_samples is not None else eval_log.eval.config.log_samples
+        )
+        log_realtime = (
+            log_realtime
+            if log_realtime is not None
+            else eval_log.eval.config.log_realtime
         )
         log_images = (
             log_images if log_images is not None else eval_log.eval.config.log_images
@@ -852,6 +900,7 @@ async def eval_retry_async(
                 sample_id=sample_id,
                 epochs=epochs,
                 fail_on_error=fail_on_error,
+                retry_on_error=retry_on_error,
                 debug_errors=debug_errors,
                 message_limit=message_limit,
                 token_limit=token_limit,
@@ -862,6 +911,7 @@ async def eval_retry_async(
                 max_subprocesses=max_subprocesses,
                 max_sandboxes=max_sandboxes,
                 log_samples=log_samples,
+                log_realtime=log_realtime,
                 log_images=log_images,
                 log_buffer=log_buffer,
                 log_shared=log_shared,

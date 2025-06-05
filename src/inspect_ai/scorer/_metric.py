@@ -5,8 +5,8 @@ from typing import (
     Callable,
     ParamSpec,
     Protocol,
+    Type,
     Union,
-    cast,
     overload,
     runtime_checkable,
 )
@@ -24,6 +24,7 @@ from inspect_ai._util.registry import (
     registry_params,
     registry_tag,
 )
+from inspect_ai.dataset._dataset import MT, metadata_as
 
 logger = getLogger(__name__)
 
@@ -120,6 +121,20 @@ class SampleScore(BaseModel):
 
     sample_metadata: dict[str, Any] | None = Field(default=None)
     """Metadata from the sample"""
+
+    def sample_metadata_as(self, metadata_cls: Type[MT]) -> MT | None:
+        """Pydantic model interface to sample metadata.
+
+        Args:
+          metadata_cls: Pydantic model type
+
+        Returns:
+          BaseModel: Instance of metadata_cls bound to sample metadata.
+        """
+        if self.sample_metadata is not None:
+            return metadata_as(self.sample_metadata, metadata_cls)
+        else:
+            return None
 
     scorer: str | None = Field(default=None)
     """Registry name of scorer that created this score."""
@@ -340,7 +355,7 @@ def metric(
             )
             return metric
 
-        return metric_register(cast(Callable[P, Metric], metric_wrapper), metric_name)
+        return metric_register(metric_wrapper, metric_name)
 
     # for decorators with an explicit name, one more wrapper for the name
     if isinstance(name, str):

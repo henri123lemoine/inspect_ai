@@ -7,8 +7,8 @@ import {
   ContentReasoning,
   ContentText,
   ContentVideo,
-  Format,
   Format1,
+  Format2,
 } from "../../../@types/log";
 import { ContentTool } from "../../../app/types";
 import ExpandablePanel from "../../../components/ExpandablePanel";
@@ -54,6 +54,7 @@ export const MessageContent: FC<MessageContentProps> = ({ contents }) => {
             type: "text",
             text: content,
             refusal: null,
+            internal: null,
           },
           index === contents.length - 1,
         );
@@ -78,6 +79,7 @@ export const MessageContent: FC<MessageContentProps> = ({ contents }) => {
       type: "text",
       text: contents,
       refusal: null,
+      internal: null,
     };
     return messageRenderers["text"].render(
       "text-message-content",
@@ -176,7 +178,7 @@ const messageRenderers: Record<string, MessageRenderer> = {
  * Renders message content based on its type.
  * Supports rendering strings, images, and tools using specific renderers.
  */
-const mimeTypeForFormat = (format: Format | Format1): string => {
+const mimeTypeForFormat = (format: Format1 | Format2): string => {
   switch (format) {
     case "mov":
       return "video/quicktime";

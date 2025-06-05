@@ -50,10 +50,7 @@ export const useSamplesTabConfig = (
           : totalSampleCount === 1
             ? [<ScoreFilterTools />]
             : [
-                <SampleTools
-                  samples={sampleSummaries || []}
-                  key="sample-tools"
-                />,
+                <SampleTools key="sample-tools" />,
                 evalStatus === "started" && !streamSamples && (
                   <ToolButton
                     key="refresh"
@@ -108,8 +105,11 @@ export const SamplesTab: FC<SamplesTabProps> = ({ running }) => {
   const groupBy = useGroupBy();
   const groupByOrder = useGroupByOrder();
   const currentScore = useScore();
+  const selectSample = useStore((state) => state.logActions.selectSample);
 
-  const selectedSample = useStore((state) => state.sample.selectedSample);
+  const selectedSampleIdentifier = useStore(
+    (state) => state.sample.sample_identifier,
+  );
 
   const [items, setItems] = useState<ListItem[]>([]);
   const [sampleItems, setSampleItems] = useState<ListItem[]>([]);
@@ -187,6 +187,10 @@ export const SamplesTab: FC<SamplesTabProps> = ({ running }) => {
           })
         : [],
     );
+
+    if (sampleSummaries.length === 1) {
+      selectSample(0);
+    }
   }, [sampleSummaries, sampleProcessor]);
 
   const title =
@@ -216,7 +220,11 @@ export const SamplesTab: FC<SamplesTabProps> = ({ running }) => {
         ) : undefined}
         {showingSampleDialog && (
           <SampleDialog
-            id={String(selectedSample?.id || "")}
+            id={
+              selectedSampleIdentifier
+                ? `${selectedSampleIdentifier.id}_${selectedSampleIdentifier.epoch}`
+                : ""
+            }
             title={title}
             showingSampleDialog={showingSampleDialog}
           />

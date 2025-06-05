@@ -35,6 +35,9 @@ const system_msg_added_sig: ChangeType = {
   render: (_changes, resolvedState) => {
     const messages = resolvedState["messages"] as Array<unknown>;
     const message = messages[0];
+    if (typeof message !== "object" || !message) {
+      return <></>;
+    }
     return (
       <ChatView
         key="system_msg_event_preview"
@@ -172,7 +175,11 @@ const renderTools = (
     return change.path.startsWith("/tool_choice");
   });
   if (resolvedState.tool_choice && hasToolChoice) {
-    toolsInfo["Tool Choice"] = toolName(resolvedState.tool_choice);
+    toolsInfo["Tool Choice"] = (
+      <span className={clsx("text-size-smaller")}>
+        {toolName(resolvedState.tool_choice)}
+      </span>
+    );
   }
 
   // Show either all tools or just the specific tools
@@ -204,7 +211,7 @@ const renderTools = (
             >
               {key}
             </div>
-            <div className={clsx("text-size-base")}>{toolsInfo[key]}</div>
+            {toolsInfo[key]}
           </Fragment>
         );
       })}
@@ -275,19 +282,23 @@ interface ToolsProps {
  * Renders a list of tool components based on the provided tool definitions.
  */
 export const Tools: FC<ToolsProps> = ({ toolDefinitions }) => {
-  return toolDefinitions.map((toolDefinition, idx) => {
-    const toolName = toolDefinition.name;
-    const toolArgs = toolDefinition.parameters?.properties
-      ? Object.keys(toolDefinition.parameters.properties)
-      : [];
-    return (
-      <Tool
-        key={`${toolName}-${idx}`}
-        toolName={toolName}
-        toolArgs={toolArgs}
-      />
-    );
-  });
+  return (
+    <div className={styles.toolsGrid}>
+      {toolDefinitions.map((toolDefinition, idx) => {
+        const toolName = toolDefinition.name;
+        const toolArgs = toolDefinition.parameters?.properties
+          ? Object.keys(toolDefinition.parameters.properties)
+          : [];
+        return (
+          <Tool
+            key={`${toolName}-${idx}`}
+            toolName={toolName}
+            toolArgs={toolArgs}
+          />
+        );
+      })}
+    </div>
+  );
 };
 
 interface ToolProps {
@@ -304,10 +315,8 @@ export const Tool: FC<ToolProps> = ({ toolName, toolArgs }) => {
       ? `${toolName}(${toolArgs.join(", ")})`
       : toolName;
   return (
-    <div>
-      <code className={clsx("text-size-small", styles.tool)}>
-        {functionCall}
-      </code>
-    </div>
+    <code className={clsx("text-size-smallest", styles.tool)}>
+      {functionCall}
+    </code>
   );
 };

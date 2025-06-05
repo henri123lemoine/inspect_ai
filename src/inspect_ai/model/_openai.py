@@ -255,6 +255,8 @@ def openai_completion_params(
                 strict=config.response_schema.strict,
             ),
         )
+    if config.extra_body:
+        params["extra_body"] = config.extra_body
 
     return params
 
@@ -423,10 +425,12 @@ def chat_messages_from_openai(
                 "reasoning", None
             )
             if reasoning is not None:
+                # normalize content to an array
                 if isinstance(content, str):
                     content = [ContentText(text=content, refusal=refusal)]
-                else:
-                    content.insert(0, ContentReasoning(reasoning=str(reasoning)))
+
+                # insert reasoning
+                content.insert(0, ContentReasoning(reasoning=str(reasoning)))
 
             # return message
             if "tool_calls" in message:
@@ -590,7 +594,7 @@ def chat_choices_from_openai(
             stop_reason=as_stop_reason(choice.finish_reason),
             logprobs=(
                 Logprobs(**choice.logprobs.model_dump())
-                if choice.logprobs is not None
+                if choice.logprobs and choice.logprobs.content is not None
                 else None
             ),
         )

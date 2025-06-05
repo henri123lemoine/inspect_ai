@@ -9,6 +9,7 @@ from ._file import (
     read_eval_log,
     read_eval_log_async,
     read_eval_log_sample,
+    read_eval_log_sample_summaries,
     read_eval_log_samples,
     write_eval_log,
     write_eval_log_async,
@@ -28,6 +29,7 @@ from ._log import (
     EvalSampleLimit,
     EvalSampleReductions,
     EvalSampleScore,
+    EvalSampleSummary,
     EvalScore,
     EvalSpec,
     EvalStats,
@@ -46,6 +48,8 @@ from ._transcript import (
     SampleLimitEvent,
     SandboxEvent,
     ScoreEvent,
+    SpanBeginEvent,
+    SpanEndEvent,
     StateEvent,
     StepEvent,
     StoreEvent,
@@ -54,6 +58,7 @@ from ._transcript import (
     Transcript,
     transcript,
 )
+from ._tree import EventNode, EventTree, SpanNode, event_sequence, event_tree
 
 __all__ = [
     "EvalConfig",
@@ -70,6 +75,7 @@ __all__ = [
     "EvalSampleLimit",
     "EvalSampleScore",
     "EvalSampleReductions",
+    "EvalSampleSummary",
     "EvalScore",
     "EvalSpec",
     "EvalStats",
@@ -89,6 +95,8 @@ __all__ = [
     "SampleLimitEvent",
     "SandboxEvent",
     "ScoreEvent",
+    "SpanBeginEvent",
+    "SpanEndEvent",
     "StateEvent",
     "StepEvent",
     "StoreEvent",
@@ -100,6 +108,7 @@ __all__ = [
     "read_eval_log_async",
     "read_eval_log_sample",
     "read_eval_log_samples",
+    "read_eval_log_sample_summaries",
     "condense_sample",
     "resolve_sample_attachments",
     "write_eval_log",
@@ -107,4 +116,9 @@ __all__ = [
     "write_log_dir_manifest",
     "retryable_eval_logs",
     "bundle_log_dir",
+    "event_tree",
+    "event_sequence",
+    "EventTree",
+    "EventNode",
+    "SpanNode",
 ]

@@ -183,6 +183,13 @@ def registry_lookup(type: RegistryType, name: str) -> object | None:
         return o
 
 
+def registry_package_name(name: str) -> str | None:
+    if name.find("/") != -1 and name.find(".") == -1:
+        return name.split("/")[0]
+    else:
+        return None
+
+
 def registry_find(predicate: Callable[[RegistryInfo], bool]) -> list[object]:
     r"""Find objects in the registry that match the passed predicate.
 
@@ -304,7 +311,7 @@ def registry_create(type: RegistryType, name: str, **kwargs: Any) -> object:  # 
     if isclass(obj):
         return with_registry_info(obj(**kwargs))
     elif callable(obj):
-        return_type = get_annotations(obj).get("return")
+        return_type = get_annotations(obj, eval_str=True).get("return")
         # Until we remove the MetricDeprecated symbol we need this extra
         # bit to map the Metric union back to Metric
         if "_metric.Metric" in str(return_type):

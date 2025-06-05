@@ -10,6 +10,8 @@ import {
   SampleLimitEvent,
   SandboxEvent,
   ScoreEvent,
+  SpanBeginEvent,
+  SpanEndEvent,
   StateEvent,
   StepEvent,
   StoreEvent,
@@ -23,6 +25,8 @@ export interface StateManager {
   initializeState(state: object): void;
   applyChanges(changes: Changes): object;
 }
+
+export const kTranscriptCollapseScope = "transcript-collapse";
 
 export type EventType =
   | SampleInitEvent
@@ -39,14 +43,18 @@ export type EventType =
   | InputEvent
   | ErrorEvent
   | ApprovalEvent
-  | SandboxEvent;
+  | SandboxEvent
+  | SpanBeginEvent
+  | SpanEndEvent;
 
-export class EventNode {
-  event: EventType;
-  children: EventNode[] = [];
+export class EventNode<T extends EventType = EventType> {
+  id: string;
+  event: T;
+  children: EventNode<EventType>[] = [];
   depth: number;
 
-  constructor(event: EventType, depth: number) {
+  constructor(id: string, event: T, depth: number) {
+    this.id = id;
     this.event = event;
     this.depth = depth;
   }

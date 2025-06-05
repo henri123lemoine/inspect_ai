@@ -6,6 +6,7 @@ from test_helpers.tools import addition
 from test_helpers.utils import skip_if_no_docker, skip_if_no_openai
 
 from inspect_ai import Task, eval
+from inspect_ai._util.content import Content, ContentText
 from inspect_ai.agent import (
     Agent,
     AgentState,
@@ -28,13 +29,15 @@ from inspect_ai.solver import (
     user_message,
 )
 from inspect_ai.tool import ToolFunction, bash_session, text_editor, web_browser
+from inspect_ai.tool._tool import Tool, tool
+from inspect_ai.util._collect import collect
 
 
 @agent
 def web_surfer() -> Agent:
     async def execute(state: AgentState) -> AgentState:
         """Web research assistant."""
-        # some general guideance for the agent
+        # some general guidance for the agent
         state.messages.append(
             ChatMessageSystem(
                 content="Use the web browser tools for every question, "
@@ -224,3 +227,35 @@ def test_agent_critic_parameters():
     )
 
     eval(task, model="openai/gpt-4o")
+
+
+@tool
+def web_researcher() -> Tool:
+    async def execute(query: str) -> list[Content]:
+        """Expert web researcher.
+
+        Args:
+            query: Query for web researcher
+        """
+
+        async def web_query() -> str:
+            _, output = await get_model().generate_loop(query, tools=web_browser())
+            return output.completion
+
+        results = await collect(web_query(), web_query())
+        return [ContentText(text=result) for result in results]
+
+    return execute
+
+
+@skip_if_no_openai
+@skip_if_no_docker
+def test_agent_collect() -> None:
+    task = Task(
+        dataset=[Sample(input="What was the most popular movie of 2019?")],
+        solver=react(tools=[web_researcher()]),
+        sandbox=("docker", (Path(__file__).parent / "compose.yaml").as_posix()),
+    )
+    log = eval(task, model="openai/gpt-4o")[0]
+    assert log.status == "success"
+    assert log.samples

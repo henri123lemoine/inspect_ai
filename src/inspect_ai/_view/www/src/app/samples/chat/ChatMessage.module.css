@@ -1,6 +1,5 @@
 .message {
   font-weight: 300;
-  padding-bottom: 0.5em;
   margin-left: 0;
   margin-right: 0;
   white-space: normal;
@@ -12,10 +11,10 @@
 
 .messageGrid {
   display: grid;
-  grid-template-columns: max-content auto;
+  grid-template-columns: max-content max-content max-content;
   column-gap: 0.3em;
   font-weight: 500;
-  margin-bottom: 0.5em;
+  margin-bottom: 0.3em;
 }
 
 .messageContents {
@@ -24,6 +23,15 @@
 }
 
 .messageContents.indented {
-  margin-left: 1.1rem;
-  padding-bottom: 0.8rem;
+  margin-left: 0rem;
+}
+
+.copyLink {
+  opacity: 0;
+  padding-left: 0;
+  padding-right: 2em;
+}
+
+.copyLink:hover {
+  opacity: 1;
 }

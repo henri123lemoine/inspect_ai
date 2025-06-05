@@ -1,16 +1,19 @@
-.darkenedBg {
-  background-color: var(--bs-light-bg-subtle);
-}
-
-.normalBg {
-  background-color: var(--bs-body-bg);
-}
-
-.node.first {
-  padding-top: 0.5em;
-}
-
 .node {
-  padding-top: 0;
-  padding-bottom: 0.5em;
+  padding-top: 0.8rem;
+}
+
+.attached {
+  padding-top: 0rem;
+}
+
+.attachedParent {
+  padding-bottom: 0px;
+  border-bottom-left-radius: 0;
+  border-bottom-right-radius: 0;
+  border-bottom: none;
+}
+
+.attachedChild {
+  border-top-left-radius: 0;
+  border-top-right-radius: 0;
 }

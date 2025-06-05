@@ -82,6 +82,7 @@ def eval_set(
     sample_id: str | int | list[str] | list[int] | list[str | int] | None = None,
     epochs: int | Epochs | None = None,
     fail_on_error: bool | float | None = None,
+    retry_on_error: int | None = None,
     debug_errors: bool | None = None,
     message_limit: int | None = None,
     token_limit: int | None = None,
@@ -92,6 +93,7 @@ def eval_set(
     max_subprocesses: int | None = None,
     max_sandboxes: int | None = None,
     log_samples: bool | None = None,
+    log_realtime: bool | None = None,
     log_images: bool | None = None,
     log_buffer: int | None = None,
     log_shared: bool | int | None = None,
@@ -146,13 +148,15 @@ def eval_set(
             log files (defaults to "eval", the native high-performance format).
         limit: Limit evaluated samples
             (defaults to all samples).
-        sample_id: Evaluate specific sample(s) from the dataset.
+        sample_id: Evaluate specific sample(s) from the dataset. Use plain ids or preface with task names as required to disambiguate ids across tasks (e.g. `popularity:10`).
         epochs: Epochs to repeat samples for and optional score
             reducer function(s) used to combine sample scores (defaults to "mean")
         fail_on_error: `True` to fail on first sample error
             (default); `False` to never fail on sample errors; Value between 0 and 1
             to fail if a proportion of total samples fails. Value greater than 1 to fail
             eval if a count of samples fails.
+        retry_on_error: Number of times to retry samples if they encounter errors
+            (by default, no retries occur).
         debug_errors: Raise task errors (rather than logging them)
             so they can be debugged (defaults to False).
         message_limit: Limit on total messages used for each sample.
@@ -164,12 +168,13 @@ def eval_set(
         max_samples: Maximum number of samples to run in parallel
             (default is max_connections)
         max_tasks: Maximum number of tasks to run in parallel
-            (defaults to number of models being evaluated)
+            (defaults to the greater of 4 and the number of models being evaluated)
         max_subprocesses: Maximum number of subprocesses to
             run in parallel (default is os.cpu_count())
         max_sandboxes: Maximum number of sandboxes (per-provider)
             to run in parallel.
         log_samples: Log detailed samples and scores (defaults to True)
+        log_realtime: Log events in realtime (enables live viewing of samples in inspect view). Defaults to True.
         log_images: Log base64 encoded version of images,
             even if specified as a filename or URL (defaults to False)
         log_buffer: Number of samples to buffer before writing log file.
@@ -215,6 +220,7 @@ def eval_set(
             sample_id=sample_id,
             epochs=epochs,
             fail_on_error=fail_on_error,
+            retry_on_error=retry_on_error,
             debug_errors=debug_errors,
             message_limit=message_limit,
             token_limit=token_limit,
@@ -225,9 +231,11 @@ def eval_set(
             max_subprocesses=max_subprocesses,
             max_sandboxes=max_sandboxes,
             log_samples=log_samples,
+            log_realtime=log_realtime,
             log_images=log_images,
             log_buffer=log_buffer,
             log_shared=log_shared,
+            log_header_only=True,
             score=score,
             **kwargs,
         )
@@ -270,7 +278,7 @@ def eval_set(
     retry_connections = retry_connections or 0.5
     retry_cleanup = retry_cleanup is not False
     max_connections = starting_max_connections(models, GenerateConfig(**kwargs))
-    max_tasks = max_tasks if max_tasks is not None else len(models)
+    max_tasks = max_tasks if max_tasks is not None else max(len(models), 4)
 
     # prepare console/status
     console = rich.get_console()

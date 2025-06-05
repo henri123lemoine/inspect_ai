@@ -8,10 +8,9 @@ import {
   useRef,
   useState,
 } from "react";
-import { ApplicationIcons } from "../app/appearance/icons";
 import { useCollapsedState } from "../state/hooks";
 import { useResizeObserver } from "../utils/dom";
-import "./ExpandablePanel.css";
+import styles from "./ExpandablePanel.module.css";
 
 interface ExpandablePanelProps {
   id: string;
@@ -27,19 +26,19 @@ export const ExpandablePanel: FC<ExpandablePanelProps> = memo(
     const [collapsed, setCollapsed] = useCollapsedState(id, collapse);
 
     const [showToggle, setShowToggle] = useState(false);
-    const lineHeightRef = useRef<number>(0);
+    const baseFontSizeRef = useRef<number>(0);
 
     const checkOverflow = useCallback(
       (entry: ResizeObserverEntry) => {
         const element = entry.target as HTMLDivElement;
 
         // Calculate line height if we haven't yet
-        if (!lineHeightRef.current) {
+        if (baseFontSizeRef.current === 0) {
           const computedStyle = window.getComputedStyle(element);
-          lineHeightRef.current = parseInt(computedStyle.lineHeight) || 16; // fallback to 16px if can't get line height
+          const rootFontSize = parseFloat(computedStyle.fontSize);
+          baseFontSizeRef.current = rootFontSize;
         }
-
-        const maxCollapsedHeight = lines * lineHeightRef.current;
+        const maxCollapsedHeight = baseFontSizeRef.current * lines;
         const contentHeight = element.scrollHeight;
 
         setShowToggle(contentHeight > maxCollapsedHeight);
@@ -61,21 +60,24 @@ export const ExpandablePanel: FC<ExpandablePanelProps> = memo(
           style={baseStyles}
           ref={contentRef}
           className={clsx(
-            "expandable-panel",
-            collapsed ? "expandable-collapsed" : undefined,
-            border ? "expandable-bordered" : undefined,
+            styles.expandablePanel,
+            collapsed ? styles.expandableCollapsed : undefined,
+            border ? styles.expandableBordered : undefined,
+            showToggle ? styles.padBottom : undefined,
           )}
         >
           {children}
+          {showToggle && (
+            <>
+              <MoreToggle
+                collapsed={collapsed}
+                setCollapsed={setCollapsed}
+                border={!border}
+              />
+            </>
+          )}
         </div>
-
-        {showToggle && (
-          <MoreToggle
-            collapsed={collapsed}
-            setCollapsed={setCollapsed}
-            border={!border}
-          />
-        )}
+        {showToggle && <div className={clsx(styles.separator)}></div>}
       </div>
     );
   },
@@ -95,22 +97,21 @@ const MoreToggle: FC<MoreToggleProps> = ({
   style,
 }) => {
   const text = collapsed ? "more" : "less";
-  const icon = collapsed
-    ? ApplicationIcons["expand-down"]
-    : ApplicationIcons.collapse.up;
-
   const handleClick = useCallback(() => {
     setCollapsed(!collapsed);
   }, [setCollapsed, collapsed]);
 
   return (
-    <div className={`more-toggle ${border ? "bordered" : ""}`} style={style}>
-      <div className="more-toggle-container">
-        <button className="btn more-toggle-button" onClick={handleClick}>
-          <i className={icon} />
-          {text}
-        </button>
-      </div>
+    <div
+      className={clsx(styles.moreToggle, border ? styles.bordered : undefined)}
+      style={style}
+    >
+      <button
+        className={clsx("btn", styles.moreToggleButton, "text-size-smallest")}
+        onClick={handleClick}
+      >
+        {text}...
+      </button>
     </div>
   );
 };

@@ -175,7 +175,7 @@ eval(theory_of_mind(), model="openai/gpt-4o")
 
 ## Learning More
 
-The best way to get familar with Inspect's core features is the [Tutorial](tutorial.qmd), which includes several annotated examples.
+The best way to get familiar with Inspect's core features is the [Tutorial](tutorial.qmd), which includes several annotated examples.
 
 Next, review these articles which cover basic workflow, more sophisticated examples, and additional useful tooling:
 
@@ -231,6 +231,8 @@ These sections describe how to create agent evaluations with Inspect:
 
 -   [Agents](agents.qmd) combine planning, memory, and tool usage to pursue more complex, longer horizon tasks. This articles covers the basics of using agents in evaluations.
 
+-   [ReAct Agent](react-agent.qmd) provides details on using and customizing the built-in ReAct agent.  
+
 -   [Multi Agent](multi-agent.qmd) covers various ways to compose agents together in multi-agent architectures.
 
 -   [Custom Agents](agent-custom.qmd) describes advanced Inspect APIs available for creating custom agents.
@@ -239,9 +241,14 @@ These sections describe how to create agent evaluations with Inspect:
 
 -   [Human Agent](human-agent.qmd) is a solver that enables human baselining on computing tasks.
 
+These sections outline how to analyze data generated from evaluations:
+
+-   [Eval Logs](eval-logs.qmd) explores log viewing, log file formats, and the Python API for reading log files.
+
+-   [Data Frames](dataframe.qmd) documents the APIs available for extracting dataframes of evals, samples, messages, and events from log files.
+
 These sections discuss more advanced features and workflows. You don't need to review them at the outset, but be sure to revisit them as you get more comfortable with the basics.
 
--   [Eval Logs](eval-logs.qmd) explores how to get the most out of evaluation logs for developing, debugging, and analyzing evaluations.
 
 -   [Eval Sets](eval-sets.qmd) covers Inspect's features for describing, running, and analysing larger sets of evaluation tasks.
 

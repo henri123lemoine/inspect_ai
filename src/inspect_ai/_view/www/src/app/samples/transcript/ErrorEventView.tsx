@@ -4,10 +4,10 @@ import { ANSIDisplay } from "../../../components/AnsiDisplay";
 import { formatDateTime } from "../../../utils/format";
 import { ApplicationIcons } from "../../appearance/icons";
 import { EventPanel } from "./event/EventPanel";
+import { EventNode } from "./types";
 
 interface ErrorEventViewProps {
-  id: string;
-  event: ErrorEvent;
+  eventNode: EventNode<ErrorEvent>;
   className?: string | string[];
 }
 
@@ -15,13 +15,14 @@ interface ErrorEventViewProps {
  * Renders the ErrorEventView component.
  */
 export const ErrorEventView: FC<ErrorEventViewProps> = ({
-  id,
-  event,
+  eventNode,
   className,
 }) => {
+  const event = eventNode.event;
   return (
     <EventPanel
-      id={id}
+      eventNodeId={eventNode.id}
+      depth={eventNode.depth}
       title="Error"
       className={className}
       subTitle={formatDateTime(new Date(event.timestamp))}
@@ -30,7 +31,7 @@ export const ErrorEventView: FC<ErrorEventViewProps> = ({
       <ANSIDisplay
         output={event.error.traceback_ansi}
         style={{
-          fontSize: "clamp(0.5rem, calc(0.25em + 1vw), 0.8rem)",
+          fontSize: "clamp(0.3rem, 1.1vw, 0.8rem)",
           margin: "0.5em 0",
         }}
       />

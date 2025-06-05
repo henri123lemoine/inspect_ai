@@ -10,12 +10,19 @@ from inspect_ai.tool._tool import Tool, ToolResult, tool
 from inspect_ai.tool._tool_def import ToolDef, validate_tool_parameters
 from inspect_ai.tool._tool_info import ToolInfo, parse_tool_info
 from inspect_ai.tool._tool_params import ToolParam
+from inspect_ai.util._limit import Limit, apply_limits
+from inspect_ai.util._span import span
 
 from ._agent import AGENT_DESCRIPTION, Agent, AgentState
 
 
 @tool
-def as_tool(agent: Agent, description: str | None = None, **agent_kwargs: Any) -> Tool:
+def as_tool(
+    agent: Agent,
+    description: str | None = None,
+    limits: list[Limit] = [],
+    **agent_kwargs: Any,
+) -> Tool:
     """Convert an agent to a tool.
 
     By default the model will see all of the agent's arguments as
@@ -27,6 +34,9 @@ def as_tool(agent: Agent, description: str | None = None, **agent_kwargs: Any) -
     Args:
        agent: Agent to convert.
        description: Tool description (defaults to agent description)
+       limits: List of limits to apply to the agent. Should a limit
+          be exceeded, the tool call ends and returns an error
+          explaining that a limit was exceeded.
        **agent_kwargs: Arguments to curry to Agent function (arguments
           provided here will not be presented to the model as part
           of the tool interface).
@@ -40,10 +50,17 @@ def as_tool(agent: Agent, description: str | None = None, **agent_kwargs: Any) -
             "Agent passed to as_tool was not created by an @agent decorated function"
         )
 
+    # get tool_info
+    tool_info = agent_tool_info(agent, description, **agent_kwargs)
+
     async def execute(input: str, *args: Any, **kwargs: Any) -> ToolResult:
-        # prepare state and call agent
+        # prepare state
         state = AgentState(messages=[ChatMessageUser(content=input, source="input")])
-        state = await agent(state, *args, **(agent_kwargs | kwargs))
+
+        # run the agent with limits
+        with apply_limits(limits):
+            async with span(name=tool_info.name, type="agent"):
+                state = await agent(state, *args, **(agent_kwargs | kwargs))
 
         # find assistant message to read content from (prefer output)
         if not state.output.empty:
@@ -54,9 +71,6 @@ def as_tool(agent: Agent, description: str | None = None, **agent_kwargs: Any) -
             return state.messages[-1].content
         else:
             return ""
-
-    # get tool_info
-    tool_info = agent_tool_info(agent, description, **agent_kwargs)
 
     # add "input" param
     tool_info.parameters.properties = {

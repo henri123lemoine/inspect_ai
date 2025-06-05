@@ -1,7 +1,7 @@
 import contextlib
 import shlex
 from datetime import datetime
-from typing import Iterator, Literal, Type, Union, overload
+from typing import Any, Iterator, Literal, Type, Union, overload
 
 from pydantic import JsonValue
 from pydantic_core import to_jsonable_python
@@ -133,8 +133,9 @@ class SandboxEnvironmentProxy(SandboxEnvironment):
         return output
 
     @override
-    async def connection(self) -> SandboxConnection:
-        return await self._sandbox.connection()
+    async def connection(self, *, user: str | None = None) -> SandboxConnection:
+        params: dict[str, Any] = {"user": user} if user is not None else {}
+        return await self._sandbox.connection(**params)
 
     @override
     def as_type(self, sandbox_cls: Type[ST]) -> ST:

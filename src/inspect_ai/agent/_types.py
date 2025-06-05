@@ -2,6 +2,7 @@ from typing import Awaitable, Callable, NamedTuple, TypeAlias
 
 from inspect_ai.agent._agent import AgentState
 from inspect_ai.scorer._metric import Score, ValueToFloat, value_to_float
+from inspect_ai.tool._tool import Tool
 
 DEFAULT_HANDOFF_PROMPT = """
 You are part of a multi-agent system designed to make agent coordination and
@@ -21,7 +22,9 @@ see the result of tool calls right after sending the message. If you need
 to perform multiple actions, you can always send more messages with additional
 tool calls. Do some reasoning before your actions, describing what tool calls
 you are going to use and how they fit into your plan.
+"""
 
+DEFAULT_SUBMIT_PROMPT = """
 When you have completed the task and have an answer, call the {submit}()
 tool to report it.
 """
@@ -37,12 +40,23 @@ class AgentPrompt(NamedTuple):
     """Prompt used when there are additional handoff agents active."""
 
     assistant_prompt: str | None = DEFAULT_ASSISTANT_PROMPT
-    """Prompt for assistant (covers tool use, submit tool, CoT, etc.)."""
+    """Prompt for assistant (covers tool use, CoT, etc.)."""
+
+    submit_prompt: str | None = DEFAULT_SUBMIT_PROMPT
+    """Prompt to tell the model about the submit tool.
+
+    This prompt is not used if the `assistant_prompt` contains a
+    {submit} placeholder.
+    """
 
 
 DEFAULT_CONTINUE_PROMPT = """
 Please proceed to the next step using your best judgement. If you believe you
-have completed the task, please call the `{submit}()` tool.
+have completed the task, please call the `{submit}()` tool with your final answer.
+"""
+
+DEFAULT_CONTINUE_PROMOT_NO_SUBMIT = """
+Please proceed to the next step using your best judgement.
 """
 
 
@@ -80,8 +94,27 @@ class AgentAttempts(NamedTuple):
 class AgentSubmit(NamedTuple):
     """Configure the submit tool of a react agent."""
 
-    name: str = "submit"
-    """Name for submit tool."""
+    name: str | None = None
+    """Name for submit tool (defaults to 'submit')."""
 
-    description: str = "Submit an answer for evaluation."
-    """Description of submit tool."""
+    description: str | None = None
+    """Description of submit tool (defaults to 'Submit an answer for evaluation')."""
+
+    tool: Tool | None = None
+    """Alternate implementation for submit tool.
+
+    The tool can provide its `name` and `description` internally,
+    or these values can be overriden by the `name` and `description`
+    fields in `AgentSubmit`
+
+    The tool should return the `answer` provided to it for scoring.
+    """
+
+    answer_only: bool = False
+    """Set the completion to only the answer provided by the submit tool.
+
+    By default, the answer is appended (with `answer_delimiter`) to whatever
+    other content the model generated along with the call to `submit()`."""
+
+    answer_delimiter: str = "\n\n"
+    """Delimter used when appending submit tool answer to other content the model generated along with the call to `submit()`."""

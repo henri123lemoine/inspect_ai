@@ -6,17 +6,24 @@ import {
   ChatMessageTool,
   ChatMessageUser,
 } from "../../../@types/log";
+import { CopyButton } from "../../../components/CopyButton";
 import ExpandablePanel from "../../../components/ExpandablePanel";
+import { ApplicationIcons } from "../../appearance/icons";
+import {
+  supportsLinking,
+  toFullUrl,
+  useSampleMessageUrl,
+} from "../../routing/url";
 import styles from "./ChatMessage.module.css";
 import { MessageContents } from "./MessageContents";
-import { iconForMsg } from "./messages";
+import { ChatViewToolCallStyle } from "./types";
 
 interface ChatMessageProps {
   id: string;
   message: ChatMessageAssistant | ChatMessageSystem | ChatMessageUser;
   toolMessages: ChatMessageTool[];
   indented?: boolean;
-  toolCallStyle: "compact" | "complete";
+  toolCallStyle: ChatViewToolCallStyle;
 }
 
 export const ChatMessage: FC<ChatMessageProps> = ({
@@ -26,7 +33,9 @@ export const ChatMessage: FC<ChatMessageProps> = ({
   indented,
   toolCallStyle,
 }) => {
-  const collapse = message.role === "system";
+  const messageUrl = useSampleMessageUrl(message.id);
+
+  const collapse = message.role === "system" || message.role === "user";
   return (
     <div
       className={clsx(
@@ -34,11 +43,20 @@ export const ChatMessage: FC<ChatMessageProps> = ({
         "text-size-base",
         styles.message,
         message.role === "system" ? styles.systemRole : undefined,
+        message.role === "user" ? styles.userRole : undefined,
       )}
     >
       <div className={clsx(styles.messageGrid, "text-style-label")}>
-        <i className={iconForMsg(message)} />
         {message.role}
+        {supportsLinking() && messageUrl ? (
+          <CopyButton
+            icon={ApplicationIcons.link}
+            value={toFullUrl(messageUrl)}
+            className={clsx(styles.copyLink)}
+          />
+        ) : (
+          ""
+        )}
       </div>
       <div
         className={clsx(
@@ -46,7 +64,11 @@ export const ChatMessage: FC<ChatMessageProps> = ({
           indented ? styles.indented : undefined,
         )}
       >
-        <ExpandablePanel id={`${id}-message`} collapse={collapse} lines={30}>
+        <ExpandablePanel
+          id={`${id}-message`}
+          collapse={collapse}
+          lines={collapse ? 15 : 25}
+        >
           <MessageContents
             id={`${id}-contents`}
             key={`${id}-contents`}

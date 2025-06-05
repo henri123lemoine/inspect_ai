@@ -1,4 +1,4 @@
-import { FC, useMemo } from "react";
+import { FC, RefObject, useMemo, useRef } from "react";
 import {
   EvalError,
   EvalPlan,
@@ -6,14 +6,12 @@ import {
   EvalSpec,
   EvalStats,
 } from "../../../@types/log";
-import { UsageCard } from "../../usage/UsageCard";
-import { TaskErrorCard } from "../error/TaskErrorPanel";
 import { SampleSummary } from "../../../client/api/types";
 import { MessageBand } from "../../../components/MessageBand";
-import { ModelCard } from "../../plan/ModelCard";
 import { kLogViewInfoTabId } from "../../../constants";
 import { useTotalSampleCount } from "../../../state/hooks";
 import { PlanCard } from "../../plan/PlanCard";
+import { TaskErrorCard } from "../error/TaskErrorPanel";
 
 // Individual hook for Info tab
 export const useInfoTabConfig = (
@@ -21,8 +19,8 @@ export const useInfoTabConfig = (
   evalPlan: EvalPlan | undefined,
   evalError: EvalError | undefined | null,
   evalResults: EvalResults | undefined | null,
-  evalStats: EvalStats | undefined,
 ) => {
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const totalSampleCount = useTotalSampleCount();
   return useMemo(() => {
     return {
@@ -35,14 +33,15 @@ export const useInfoTabConfig = (
         evalPlan,
         evalError,
         evalResults,
-        evalStats,
         sampleCount: totalSampleCount,
+        scrollRef,
       },
+      scrollRef,
     };
-  }, [evalSpec, evalPlan, evalError, evalResults, evalStats, totalSampleCount]);
+  }, [evalSpec, evalPlan, evalError, evalResults, totalSampleCount]);
 };
 
-interface PlanTabProps {
+interface InfoTabProps {
   evalSpec?: EvalSpec;
   evalPlan?: EvalPlan;
   evalStats?: EvalStats;
@@ -51,16 +50,17 @@ interface PlanTabProps {
   evalStatus?: "started" | "error" | "cancelled" | "success";
   evalError?: EvalError;
   sampleCount?: number;
+  scrollRef: RefObject<HTMLDivElement | null>;
 }
 
-export const InfoTab: FC<PlanTabProps> = ({
+export const InfoTab: FC<InfoTabProps> = ({
   evalSpec,
   evalPlan,
   evalResults,
-  evalStats,
   evalStatus,
   evalError,
   sampleCount,
+  scrollRef,
 }) => {
   const showWarning =
     sampleCount === 0 &&
@@ -84,9 +84,8 @@ export const InfoTab: FC<PlanTabProps> = ({
           evalSpec={evalSpec}
           evalPlan={evalPlan}
           scores={evalResults?.scores}
+          scrollRef={scrollRef}
         />
-        {evalSpec ? <ModelCard evalSpec={evalSpec} /> : undefined}
-        {evalStatus !== "started" ? <UsageCard stats={evalStats} /> : undefined}
         {evalStatus === "error" && evalError ? (
           <TaskErrorCard error={evalError} />
         ) : undefined}

@@ -92,14 +92,19 @@ website:
          - section: "Agents"
            contents:
                - agents.qmd
+               - react-agent.qmd
                - multi-agent.qmd
                - agent-custom.qmd
                - agent-bridge.qmd
                - human-agent.qmd
 
-         - section: "Advanced"
+         - section: "Analysis"
            contents:
                - eval-logs.qmd
+               - dataframe.qmd
+             
+         - section: "Advanced"
+           contents:
                - eval-sets.qmd
                - text: "Errors & Limits"
                  href: errors-and-limits.qmd

@@ -58,6 +58,7 @@ export interface LogsState {
   logHeaders: Record<string, EvalLogHeader>;
   headersLoading: boolean;
   selectedLogIndex: number;
+  selectedLogFile?: string;
 }
 
 export interface LogState {
@@ -67,7 +68,9 @@ export interface LogState {
   selectedLogSummary?: EvalSummary;
   pendingSampleSummaries?: PendingSamples;
 
-  filter: ScoreFilter;
+  filter: string;
+  filterError?: FilterError;
+
   epoch: string;
   sort: string;
   score?: ScoreLabel;
@@ -76,13 +79,27 @@ export interface LogState {
 
 export type SampleStatus = "ok" | "loading" | "streaming" | "error";
 
+export type SampleIdentifier = {
+  id: string | number;
+  epoch: number;
+};
+
 export interface SampleState {
-  selectedSample: EvalSample | undefined;
+  sample_identifier: SampleIdentifier | undefined;
+  sampleInState: boolean;
+  selectedSampleObject?: EvalSample;
   sampleStatus: SampleStatus;
   sampleError: Error | undefined;
+  sampleNeedsReload: number;
+
+  visiblePopover?: string;
 
   // Events and attachments
   runningEvents: Event[];
+  collapsedEvents: Record<string, Record<string, boolean>> | null;
+  collapsedIdBuckets: Record<string, Record<string, boolean>>;
+
+  selectedOutlineId?: string;
 }
 
 export type Event =
@@ -122,8 +139,16 @@ export interface ScoreLabel {
   scorer: string;
 }
 
-export interface ScoreFilter {
+export interface SampleFilter {
   value?: string;
+  error?: FilterError;
+}
+
+export interface FilterError {
+  from: number;
+  to: number;
+  message: string;
+  severity: "warning" | "error";
 }
 
 export type SampleMode = "none" | "single" | "many";

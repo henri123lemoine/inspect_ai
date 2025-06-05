@@ -29,15 +29,18 @@
 - [Tool Approval](https://inspect.aisi.org.uk/approval.html.md): Approvals enable you to create fine-grained policies for approving tool calls made by models.
 
 - [Agents](https://inspect.aisi.org.uk/agents.html.md): Agents combine planning, memory, and tool usage to pursue more complex, longer horizon tasks. This section describes how to build agent evaluations with Inspect.
+- [ReAct Agent](https://inspect.aisi.org.uk/react-agent.html.md)  provides details on using and customizing the built-in ReAct agent.  
 - [Multi Agent](https://inspect.aisi.org.uk/multi-agent.html.md) covers various ways to compose agents together in multi-agent architectures.
 - [Custom Agents](https://inspect.aisi.org.uk/agent-custom.html.md): This article describes Inspect APIs available for creating custom agents.
 - [Agent Bridge](agent-bridge.qmd): Facility for integrating agents from 3rd party frameworks like AutoGen or LangChain.
 - [Human Agent](https://inspect.aisi.org.uk/human-agent.html.md): This article describes the `human_cli()` agent which enables human baselining for computing tasks.
 
 - [Eval Logs](https://inspect.aisi.org.uk/eval-logs.html.md): Explores how to get the most out of evaluation logs for developing, debugging, and analyzing evaluations.
+- [Data Frames](https://inspect.aisi.org.uk/dataframe.html.md) documents the APIs available for extracting dataframes of evals, samples, messages, and events from log files.
+
 - [Eval Sets](https://inspect.aisi.org.uk/eval-sets.html.md): Covers Inspect's features for describing, running, and analysing larger sets of evaluation tasks.
 - [Errors and Limits](https://inspect.aisi.org.uk/errors-and-limits.html.md): This article covers various techniques for dealing with unexpected errors and setting limits on evaluation tasks and samples, including retrying failed evaluations, establishing a threshold of samples to tolerate errors for before failing an evaluation, and setting a maximum number of messages, tokens, or elapsed seconds in a sample before forcing the solver to give up.
-- [Typing](https://inspect.aisi.org.uk/typing.html.md): Provides guideance on using static type checking with Inspect, including creating typed interfaces to untyped storage (i.e. sample metadata and store).
+- [Typing](https://inspect.aisi.org.uk/typing.html.md): Provides guidance on using static type checking with Inspect, including creating typed interfaces to untyped storage (i.e. sample metadata and store).
 - [Tracing](https://inspect.aisi.org.uk/tracing.html.md): Describes advanced execution tracing tools used to diagnose runtime issues.
 - [Parallelism](https://inspect.aisi.org.uk/parallelism.html.md): Delves into how to obtain maximum performance for evaluations. Inspect uses a highly parallel async architecture---here we cover how to tune this parallelism (e.g to stay under API rate limits or to not overburden local compute) for optimal throughput.
 - [Interactivity](https://inspect.aisi.org.uk/interactivity.html.md): Covers various ways to introduce user interaction into the implementation of tasks (for example, confirming consequential actions or prompting the model dynamically based on the trajectory of the evaluation).
@@ -54,6 +57,7 @@
 - [inspect_ai.dataset](https://inspect.aisi.org.uk/reference/inspect_ai.dataset.html.md) describes the types used to read and manipulate datasets and samples.
 - [inspect_ai.approval](https://inspect.aisi.org.uk/reference/inspect_ai.approval.html.md) covers using built in approvers as well as the types used to create custom approvers and approval policies.
 - [inspect_ai.log](https://inspect.aisi.org.uk/reference/inspect_ai.log.html.md) describes the types used to list, read, write, and traverse the contents of eval log files.
+- [inspect_ai.analysis](https://inspect.aisi.org.uk/reference/inspect_ai.analysis.html.md) covers the Python API for reading logs into dataframes for analysis.
 - [inspect_ai.util](https://inspect.aisi.org.uk/reference/inspect_ai.util.html.md) covers various utility functions for concurrency, sandboxes, the store, and more.
 
 ## Reference: Command Line 

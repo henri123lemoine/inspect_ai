@@ -140,7 +140,7 @@ export function createSamplePolling(
 
               // Update the store with the completed sample
               set((state) => {
-                state.sample.selectedSample = migratedSample;
+                state.sampleActions.setSelectedSample(migratedSample);
                 state.sampleActions.setSampleStatus("ok");
                 state.sample.runningEvents = [];
               });
@@ -283,6 +283,14 @@ function processEvents(sampleData: SampleData, pollingState: PollingState) {
     const resolvedEvent = resolveAttachments<Event>(
       eventData.event,
       pollingState.attachments,
+      (attachmentId: string) => {
+        const snapshot = {
+          eventId: eventData.event_id,
+          attachmentId,
+          available_attachments: Object.keys(pollingState.attachments),
+        };
+        console.warn(`Unable to resolve attachment ${attachmentId}`, snapshot);
+      },
     );
 
     if (existingIndex) {

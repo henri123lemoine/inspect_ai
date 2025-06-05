@@ -4,6 +4,7 @@ import sys
 from typing import Any, Awaitable, Callable, Set, cast
 
 from inspect_ai._eval.task.task import Task
+from inspect_ai._util.environ import environ_vars
 from inspect_ai._util.trace import trace_action
 
 if sys.version_info < (3, 11):
@@ -49,7 +50,7 @@ from .loader import (
 from .task.log import TaskLogger
 from .task.resolved import ResolvedTask
 from .task.run import TaskRunOptions, task_run
-from .task.sandbox import TaskSandboxEnvironment, resolve_sandbox_for_task
+from .task.sandbox import TaskSandboxEnvironment, resolve_sandbox_for_task_and_sample
 from .task.util import slice_dataset, task_run_dir
 
 log = logging.getLogger(__name__)
@@ -62,6 +63,7 @@ async def eval_run(
     eval_config: EvalConfig,
     eval_sandbox: SandboxEnvironmentType | None,
     recorder: Recorder,
+    header_only: bool,
     epochs_reducer: list[ScoreReducer] | None = None,
     solver: Solver | SolverSpec | None = None,
     tags: list[str] | None = None,
@@ -120,6 +122,11 @@ async def eval_run(
                 # value specified from eval() or the CLI)
                 task = resolved_task.task
                 task_eval_config = eval_config.model_copy()
+
+                # sample_ids can be specified per task
+                task_eval_config.sample_id = resolve_task_sample_ids(
+                    resolved_task.task.name, task_eval_config.sample_id
+                )
 
                 # resolve the task scorers
                 eval_scorer_specs = (
@@ -206,6 +213,7 @@ async def eval_run(
                     eval_config=task_eval_config,
                     metadata=((metadata or {}) | (task.metadata or {})) or None,
                     recorder=recorder,
+                    header_only=header_only,
                 )
                 await logger.init()
 
@@ -292,9 +300,12 @@ async def run_multiple(tasks: list[TaskRunOptions], parallel: int) -> list[EvalL
 
     # setup pending tasks, queue, and results
     pending_tasks = tasks.copy()
-    results: list[EvalLog] = []
+    results: list[tuple[int, EvalLog]] = []
     tasks_completed = 0
     total_tasks = len(tasks)
+
+    # Create a mapping from task to its original index
+    task_to_original_index = {id(task): i for i, task in enumerate(tasks)}
 
     # produce/consume tasks
     send_channel, receive_channel = anyio.create_memory_object_stream[TaskRunOptions](
@@ -316,7 +327,7 @@ async def run_multiple(tasks: list[TaskRunOptions], parallel: int) -> list[EvalL
             # among those models, pick one with the least usage
             model = min(models_with_pending, key=lambda m: model_counts[m])
 
-            # now we know there’s at least one pending task for this model so it’s safe to pick it
+            # now we know there's at least one pending task for this model so it's safe to pick it
             next_task = next(t for t in pending_tasks if str(t.model) == model)
             pending_tasks.remove(next_task)
             model_counts[str(next_task.model)] += 1
@@ -333,6 +344,8 @@ async def run_multiple(tasks: list[TaskRunOptions], parallel: int) -> list[EvalL
             nonlocal tasks_completed
             async for task_options in receive_channel:
                 result: EvalLog | None = None
+                # Get the original index of this task
+                original_index = task_to_original_index[id(task_options)]
 
                 # run the task
                 try:
@@ -348,11 +361,13 @@ async def run_multiple(tasks: list[TaskRunOptions], parallel: int) -> list[EvalL
                             # see: https://docs.python.org/3/faq/programming.html#why-do-lambdas-defined-in-a-loop-with-different-values-all-return-the-same-result
                             def create_task_runner(
                                 options: TaskRunOptions = task_options,
+                                idx: int = original_index,
                             ) -> Callable[[], Awaitable[None]]:
                                 async def run_task() -> None:
                                     nonlocal result
                                     result = await task_run(options)
-                                    results.append(result)
+                                    # Store result with its original index
+                                    results.append((idx, result))
 
                                 return run_task
 
@@ -420,7 +435,44 @@ async def run_multiple(tasks: list[TaskRunOptions], parallel: int) -> list[EvalL
 
             clear_task_screen()
 
-        return results
+        # Sort results by original index and return just the values
+        return [r for _, r in sorted(results)]
+
+
+def resolve_task_sample_ids(
+    task: str, sample_id: str | int | list[str] | list[int] | list[str | int] | None
+) -> str | int | list[str] | list[int] | list[str | int] | None:
+    def collect_for_task(sample: str | int) -> str | int | None:
+        if isinstance(sample, str):
+            scoped = sample.split(":", maxsplit=1)
+            if len(scoped) > 1:
+                if scoped[0].lower() == task.lower():
+                    return scoped[1]
+                else:
+                    return None
+            else:
+                return sample
+        else:
+            return sample
+
+    if sample_id is not None:
+        if isinstance(sample_id, list):
+            ids: list[int | str] = []
+            for id in sample_id:
+                collect = collect_for_task(id)
+                if collect is not None:
+                    ids.append(collect)
+            return ids
+
+        else:
+            collect = collect_for_task(sample_id)
+            if collect is not None:
+                return collect
+            else:
+                return []
+
+    else:
+        return sample_id
 
 
 async def startup_sandbox_environments(
@@ -433,9 +485,16 @@ async def startup_sandbox_environments(
     sandboxenvs: Set[TaskSandboxEnvironment] = set()
     for task in tasks:
         # resolve each sample and add to sandboxenvs
-        dataset = slice_dataset(task.task.dataset, config.limit, config.sample_id)
+        resolved_task_sample_ids = resolve_task_sample_ids(
+            task.task.name, config.sample_id
+        )
+        dataset = slice_dataset(
+            task.task.dataset, config.limit, resolved_task_sample_ids
+        )
         for sample in dataset:
-            sandbox = resolve_sandbox_for_task(eval_sandbox, task.task, sample)
+            sandbox = await resolve_sandbox_for_task_and_sample(
+                eval_sandbox, task.task, sample
+            )
             if sandbox is not None and sandbox not in sandboxenvs:
                 sandboxenvs.add(sandbox)
 
@@ -448,7 +507,7 @@ async def startup_sandbox_environments(
 
             # run startup
             task_init = cast(TaskInit, getattr(sandboxenv_type, "task_init"))
-            with chdir(sandboxenv.run_dir):
+            with chdir(sandboxenv.run_dir), environ_vars(dict(sandboxenv.env)):
                 await task_init("startup", sandboxenv.sandbox.config)
 
             # append cleanup method

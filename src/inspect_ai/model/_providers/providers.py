@@ -105,7 +105,7 @@ def vertex() -> type[ModelAPI]:
 def google() -> type[ModelAPI]:
     FEATURE = "Google API"
     PACKAGE = "google-genai"
-    MIN_VERSION = "1.11.0"
+    MIN_VERSION = "1.16.1"
 
     # verify we have the package
     try:
@@ -136,10 +136,12 @@ def hf() -> type[ModelAPI]:
 
 @modelapi(name="vllm")
 def vllm() -> type[ModelAPI]:
-    try:
-        from .vllm import VLLMAPI
-    except ImportError:
-        raise pip_dependency_error("vLLM Models", ["vllm"])
+    # Only validate OpenAI compatibility (needed for the API interface)
+    validate_openai_client("vLLM API")
+
+    # Import VLLMAPI without checking for vllm package yet
+    # The actual vllm dependency will only be checked if needed to start a server
+    from .vllm import VLLMAPI
 
     return VLLMAPI
 
@@ -257,6 +259,18 @@ def mockllm() -> type[ModelAPI]:
     return MockLLM
 
 
+@modelapi(name="sglang")
+def sglang() -> type[ModelAPI]:
+    # Only validate OpenAI compatibility (needed for the API interface)
+    validate_openai_client("SGLang API")
+
+    # Import SGLangAPI without checking for sglang package yet
+    # The actual sglang dependency will only be checked if needed to start a server
+    from .sglang import SGLangAPI
+
+    return SGLangAPI
+
+
 @modelapi(name="none")
 def none() -> type[ModelAPI]:
     from .none import NoModel
@@ -267,7 +281,7 @@ def none() -> type[ModelAPI]:
 def validate_openai_client(feature: str) -> None:
     FEATURE = feature
     PACKAGE = "openai"
-    MIN_VERSION = "1.75.0"
+    MIN_VERSION = "1.78.0"
 
     # verify we have the package
     try:

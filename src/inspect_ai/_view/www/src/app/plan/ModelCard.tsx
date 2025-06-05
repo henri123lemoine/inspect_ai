@@ -3,7 +3,6 @@ import { FC } from "react";
 import clsx from "clsx";
 import { EvalModelConfig, EvalSpec } from "../../@types/log";
 import { Card, CardBody, CardHeader } from "../../components/Card";
-import { ApplicationIcons } from "../appearance/icons";
 import { MetaDataGrid } from "../content/MetaDataGrid";
 import styles from "./ModelCard.module.css";
 
@@ -33,7 +32,7 @@ export const ModelCard: FC<ModelCardProps> = ({ evalSpec }) => {
 
   return (
     <Card>
-      <CardHeader icon={ApplicationIcons.model} label="Models" />
+      <CardHeader label="Models" />
       <CardBody id={"task-model-card-body"}>
         <div className={styles.container}>
           {Object.keys(modelsInfo || {}).map((modelKey) => {
@@ -52,14 +51,15 @@ export const ModelCard: FC<ModelCardProps> = ({ evalSpec }) => {
                 >
                   {modelKey}
                 </div>
-
+                <div className={clsx(styles.sep)} />
                 <div className={clsx("text-style-label")}>Model</div>
                 <div>{modelInfo.model}</div>
-
+                <div className={clsx(styles.sep)} />
                 <div className={clsx("text-style-label")}>Base Url</div>
                 <div className="text-size-small">
                   {modelInfo.base_url || noneEl}
                 </div>
+                <div className={clsx(styles.sep)} />
                 <div className={clsx("text-style-label")}>Configuration</div>
                 <div className="text-size-small">
                   {modelInfo.config &&
@@ -73,6 +73,7 @@ export const ModelCard: FC<ModelCardProps> = ({ evalSpec }) => {
                     noneEl
                   )}
                 </div>
+                <div className={clsx(styles.sep)} />
                 <div className={clsx("text-style-label")}>Args</div>
                 <div className="text-size-small">
                   {Object.keys(modelInfo.args).length > 0 ? (
@@ -83,6 +84,7 @@ export const ModelCard: FC<ModelCardProps> = ({ evalSpec }) => {
                     noneEl
                   )}
                 </div>
+                <div className={clsx(styles.sep)} />
               </div>
             );
           })}

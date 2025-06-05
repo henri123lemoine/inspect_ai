@@ -1,19 +1,12 @@
 import { compileExpression } from "filtrex";
 import { Scores1 } from "../../../@types/log";
-import { ScoreLabel } from "../../../app/types";
+import { FilterError, ScoreLabel } from "../../../app/types";
 import { SampleSummary } from "../../../client/api/types";
 import { kScoreTypeBoolean } from "../../../constants";
 import { inputString } from "../../../utils/format";
 import { EvalDescriptor, ScoreDescriptor } from "../descriptor/types";
 
-export interface FilterError {
-  from: number;
-  to: number;
-  message: string;
-  severity: "warning" | "error";
-}
-
-export interface ScoreFilterItem {
+export interface SampleFilterItem {
   shortName?: string;
   qualifiedName?: string;
   canonicalName: string;
@@ -110,6 +103,7 @@ const scoreVariables = (
 const sampleVariables = (sample: SampleSummary): Record<string, unknown> => {
   return {
     has_error: !!sample.error,
+    has_retries: sample.retries !== undefined && sample.retries > 0,
   };
 };
 
@@ -119,10 +113,10 @@ const sampleVariables = (sample: SampleSummary): Record<string, unknown> => {
  * Child metrics are accessed using dot notation (e.g. `scorer_name.score_name`) or
  * directly by name when it is unique.
  */
-export const scoreFilterItems = (
+export const sampleFilterItems = (
   evalDescriptor: EvalDescriptor,
-): ScoreFilterItem[] => {
-  const items: ScoreFilterItem[] = [];
+): SampleFilterItem[] => {
+  const items: SampleFilterItem[] = [];
   const bannedShortNames = bannedShortScoreNames(evalDescriptor.scores);
   const valueToString = (value: unknown) =>
     typeof value === "string" ? `"${value}"` : String(value);
@@ -220,7 +214,8 @@ export const filterExpression = (
     const resolveVariable = (name: string, get: (name: string) => any) => {
       // Sample variables (like has_error) always exist.
       if (name in mySampleVariables) {
-        return get(name);
+        const value = get(name);
+        return value;
       }
       // Score variables exist only if the sample completed successfully.
       return sample.error ? undefined : get(name);
@@ -294,8 +289,13 @@ export const filterSamples = (
   evalDescriptor: EvalDescriptor,
   samples: SampleSummary[],
   filterValue: string,
-): { result: SampleSummary[]; error: FilterError | undefined } => {
-  var error = undefined;
+): {
+  result: SampleSummary[];
+  error: FilterError | undefined;
+  allErrors: boolean;
+} => {
+  let error = undefined;
+  let errorCount = 0;
   const result = samples.filter((sample) => {
     if (filterValue) {
       const { matches, error: sampleError } = filterExpression(
@@ -304,10 +304,13 @@ export const filterSamples = (
         filterValue,
       );
       error ||= sampleError;
+      if (sampleError) {
+        errorCount++;
+      }
       return matches;
     } else {
       return true;
     }
   });
-  return { result, error };
+  return { result, error, allErrors: errorCount === samples.length };
 };

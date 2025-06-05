@@ -3,14 +3,12 @@ import { FC } from "react";
 import { StepEvent } from "../../../@types/log";
 import { formatDateTime } from "../../../utils/format";
 import { EventPanel } from "./event/EventPanel";
-import { TranscriptComponent } from "./TranscriptView";
 import { kSandboxSignalName } from "./transform/fixups";
-import { EventNode } from "./types";
+import { EventNode, EventType } from "./types";
 
 interface StepEventViewProps {
-  id: string;
-  event: StepEvent;
-  children: EventNode[];
+  eventNode: EventNode<StepEvent>;
+  children: EventNode<EventType>[];
   className?: string | string[];
 }
 
@@ -18,11 +16,11 @@ interface StepEventViewProps {
  * Renders the StepEventView component.
  */
 export const StepEventView: FC<StepEventViewProps> = ({
-  id,
-  event,
+  eventNode,
   children,
   className,
 }) => {
+  const event = eventNode.event;
   const descriptor = stepDescriptor(event);
   const title =
     descriptor.name ||
@@ -31,19 +29,15 @@ export const StepEventView: FC<StepEventViewProps> = ({
 
   return (
     <EventPanel
-      id={`step-${event.name}-${id}`}
+      eventNodeId={eventNode.id}
+      depth={eventNode.depth}
+      childIds={children.map((child) => child.id)}
       className={clsx("transcript-step", className)}
       title={title}
       subTitle={formatDateTime(new Date(event.timestamp))}
       icon={descriptor.icon}
-      collapse={descriptor.collapse}
       text={text}
-    >
-      <TranscriptComponent
-        id={`step|${event.name}|${id}`}
-        eventNodes={children}
-      />
-    </EventPanel>
+    />
   );
 };
 
@@ -93,7 +87,7 @@ const summarize = (children: EventNode[]) => {
  */
 const stepDescriptor = (
   event: StepEvent,
-): { icon?: string; name?: string; endSpace?: boolean; collapse?: boolean } => {
+): { icon?: string; name?: string; endSpace?: boolean } => {
   const rootStepDescriptor = {
     endSpace: true,
   };
@@ -138,7 +132,11 @@ const stepDescriptor = (
       return {
         ...rootStepDescriptor,
         name: "Sandbox Events",
-        collapse: true,
+      };
+    } else if (event.name === "init") {
+      return {
+        ...rootStepDescriptor,
+        name: "Init",
       };
     } else {
       return {
@@ -151,13 +149,6 @@ const stepDescriptor = (
         return {
           ...rootStepDescriptor,
           name: "Sample Init",
-          collapse: true,
-        };
-      case "init":
-        return {
-          ...rootStepDescriptor,
-          name: "Init",
-          collapse: true,
         };
       default:
         return {

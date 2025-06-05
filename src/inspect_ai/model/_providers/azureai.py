@@ -1,3 +1,4 @@
+import functools
 import json
 import os
 from copy import copy
@@ -138,6 +139,7 @@ class AzureAIAPI(ModelAPI):
     ) -> ModelOutput | tuple[ModelOutput | Exception, ModelCall]:
         # emulate tools (auto for llama, opt-in for others)
         if self.emulate_tools is None and self.is_llama():
+            self.emulate_tools = True
             handler: ChatAPIHandler | None = Llama31Handler(self.model_name)
         elif self.emulate_tools:
             handler = Llama31Handler(self.model_name)
@@ -150,11 +152,15 @@ class AzureAIAPI(ModelAPI):
 
         # prepare request
         request = dict(
-            messages=await chat_request_messages(input, handler),
-            tools=chat_tools(tools) if len(tools) > 0 else None,
-            tool_choice=chat_tool_choice(tool_choice) if len(tools) > 0 else None,
+            messages=await chat_request_messages(input, handler, self.is_mistral()),
             **self.completion_params(config),
         )
+        # newer versions of vllm reject requests with tools or tool_choice if the
+        # server hasn't been started explicitly with the --tool-call-parser and
+        # --enable-auto-tool-choice flags
+        if (not self.emulate_tools) and len(tools) > 0:
+            request["tools"] = chat_tools(tools)
+            request["tool_choice"] = chat_tool_choice(tool_choice)
 
         # create client (note the client needs to be created and closed
         # with each call so it can be cleaned up and not end up on another
@@ -275,9 +281,77 @@ class AzureAIAPI(ModelAPI):
 
 
 async def chat_request_messages(
-    messages: list[ChatMessage], handler: ChatAPIHandler | None
+    messages: list[ChatMessage],
+    handler: ChatAPIHandler | None,
+    is_mistral: bool = False,
 ) -> list[ChatRequestMessage]:
-    return [await chat_request_message(message, handler) for message in messages]
+    chat_messages = [
+        await chat_request_message(message, handler) for message in messages
+    ]
+    if is_mistral:
+        chat_messages = functools.reduce(mistral_message_reducer, chat_messages, [])
+
+    return chat_messages
+
+
+def mistral_message_reducer(
+    messages: list[ChatRequestMessage],
+    message: ChatRequestMessage,
+) -> list[ChatRequestMessage]:
+    """Fold any user messages found immediately after tool messages into the last tool message."""
+    if (
+        len(messages) > 0
+        and isinstance(messages[-1], ToolMessage)
+        and isinstance(message, UserMessage)
+    ):
+        messages[-1] = fold_user_message_into_tool_message(messages[-1], message)
+    else:
+        messages.append(message)
+
+    return messages
+
+
+def fold_user_message_into_tool_message(
+    tool_message: ToolMessage,
+    user_message: UserMessage,
+) -> ToolMessage:
+    def convert_content_items_to_string(list_content: list[ContentItem]) -> str:
+        if not all(
+            isinstance(item, (TextContentItem | ImageContentItem))
+            for item in list_content
+        ):
+            raise TypeError(
+                "Expected all items to be TextContentItem or ImageContentItem"
+            )
+
+        parts = []
+        for item in list_content:
+            if isinstance(item, TextContentItem):
+                parts.append(item.text)
+            elif isinstance(item, ImageContentItem):
+                parts.append(f"[Image: {item.image_url.url}]")
+            else:
+                raise ValueError("Unexpected content item type")
+        return "".join(parts)
+
+    def normalise_content(
+        content: str | list[ContentItem] | None,
+    ) -> str | None:
+        return (
+            None
+            if content is None
+            else convert_content_items_to_string(content)
+            if isinstance(content, list)
+            else content
+        )
+
+    tool_content = normalise_content(tool_message.content)
+    user_content = normalise_content(user_message.content)
+
+    return ToolMessage(
+        content=(tool_content or "") + (user_content or ""),
+        tool_call_id=tool_message.tool_call_id,
+    )
 
 
 async def chat_request_message(

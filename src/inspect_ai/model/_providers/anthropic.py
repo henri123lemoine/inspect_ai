@@ -5,8 +5,6 @@ from copy import copy
 from logging import getLogger
 from typing import Any, Literal, Optional, Tuple, cast
 
-import httpcore
-import httpx
 from anthropic import (
     APIConnectionError,
     APIStatusError,
@@ -28,7 +26,6 @@ from anthropic.types import (
     TextBlockParam,
     ThinkingBlock,
     ThinkingBlockParam,
-    ToolBash20250124Param,
     ToolParam,
     ToolResultBlockParam,
     ToolTextEditor20250124Param,
@@ -36,7 +33,10 @@ from anthropic.types import (
     ToolUseBlockParam,
     message_create_params,
 )
-from anthropic.types.beta import BetaToolComputerUse20250124Param
+from anthropic.types.beta import (
+    BetaToolComputerUse20250124Param,
+    BetaToolTextEditor20241022Param,
+)
 from pydantic import JsonValue
 from typing_extensions import override
 
@@ -51,9 +51,11 @@ from inspect_ai._util.error import exception_message
 from inspect_ai._util.http import is_retryable_http_status
 from inspect_ai._util.images import file_as_data_uri
 from inspect_ai._util.logger import warn_once
+from inspect_ai._util.trace import trace_message
 from inspect_ai._util.url import data_uri_mime_type, data_uri_to_base64
 from inspect_ai.tool import ToolCall, ToolChoice, ToolFunction, ToolInfo
 
+from ..._util.httpx import httpx_should_retry
 from .._chat_message import ChatMessage, ChatMessageAssistant, ChatMessageSystem
 from .._generate_config import GenerateConfig
 from .._model import ModelAPI
@@ -76,6 +78,7 @@ class AnthropicAPI(ModelAPI):
         base_url: str | None = None,
         api_key: str | None = None,
         config: GenerateConfig = GenerateConfig(),
+        streaming: bool | Literal["auto"] = "auto",
         **model_args: Any,
     ):
         # extract any service prefix from model name
@@ -84,6 +87,9 @@ class AnthropicAPI(ModelAPI):
             self.service: str | None = parts[0]
         else:
             self.service = None
+
+        # record steraming pref
+        self.streaming = streaming
 
         # collect generate model_args (then delete them so we can pass the rest on)
         def collect_model_arg(name: str) -> Any | None:
@@ -215,6 +221,8 @@ class AnthropicAPI(ModelAPI):
                 # tools are generally available for Claude 3.5 Sonnet (new) as well and
                 # can be used without the computer use beta header.
                 betas.append("computer-use-2025-01-24")
+            if any("20241022" in str(tool.get("type", "")) for tool in tools_param):
+                betas.append("computer-use-2024-10-22")
             if len(betas) > 0:
                 extra_headers["anthropic-beta"] = ",".join(betas)
 
@@ -224,8 +232,13 @@ class AnthropicAPI(ModelAPI):
             if self.extra_body is not None:
                 request["extra_body"] = self.extra_body
 
-            # make request (stream if we are using reasoning)
-            if self.is_using_thinking(config):
+            # make request (unless overrideen, stream if we are using reasoning)
+            streaming = (
+                self.is_using_thinking(config)
+                if self.streaming == "auto"
+                else self.streaming
+            )
+            if streaming:
                 async with self.client.messages.stream(**request) as stream:
                     message = await stream.get_final_message()
             else:
@@ -263,13 +276,25 @@ class AnthropicAPI(ModelAPI):
         params = dict(model=self.service_model_name(), max_tokens=max_tokens)
         headers: dict[str, str] = {}
         betas: list[str] = []
-        # some params not compatible with thinking models
-        if not self.is_using_thinking(config):
-            if config.temperature is not None:
+
+        # temperature not compatible with extended thinking
+        THINKING_WARNING = "anthropic models do not support the '{parameter}' parameter when using extended thinking."
+        if config.temperature is not None:
+            if self.is_using_thinking(config):
+                warn_once(logger, THINKING_WARNING.format(parameter="temperature"))
+            else:
                 params["temperature"] = config.temperature
-            if config.top_p is not None:
+        # top_p not compatible with extended thinking
+        if config.top_p is not None:
+            if self.is_using_thinking(config):
+                warn_once(logger, THINKING_WARNING.format(parameter="top_p"))
+            else:
                 params["top_p"] = config.top_p
-            if config.top_k is not None:
+        # top_k not compatible with extended thinking
+        if config.top_k is not None:
+            if self.is_using_thinking(config):
+                warn_once(logger, THINKING_WARNING.format(parameter="top_k"))
+            else:
                 params["top_k"] = config.top_k
 
         # some thinking-only stuff
@@ -329,14 +354,17 @@ class AnthropicAPI(ModelAPI):
     @override
     def should_retry(self, ex: Exception) -> bool:
         if isinstance(ex, APIStatusError):
+            # for unknown reasons, anthropic does not always set status_code == 529
+            # for "overloaded_error" so we check for it explicitly
+            if isinstance(ex.body, dict):
+                if "overloaded_error" in str(ex.body):
+                    return True
+
+            # standard http status code checking
             return is_retryable_http_status(ex.status_code)
-        elif isinstance(
-            ex,
-            APIConnectionError
-            | APITimeoutError
-            | httpx.RemoteProtocolError
-            | httpcore.RemoteProtocolError,
-        ):
+        elif httpx_should_retry(ex):
+            return True
+        elif isinstance(ex, APIConnectionError | APITimeoutError):
             return True
         else:
             return False
@@ -493,11 +521,7 @@ class AnthropicAPI(ModelAPI):
         self, tool: ToolInfo, config: GenerateConfig
     ) -> Optional["ToolParamDef"]:
         return (
-            (
-                self.computer_use_tool_param(tool)
-                or self.text_editor_tool_param(tool)
-                or self.bash_tool_param(tool)
-            )
+            (self.computer_use_tool_param(tool) or self.text_editor_tool_param(tool))
             if config.internal_tools is not False
             else None
         )
@@ -545,7 +569,7 @@ class AnthropicAPI(ModelAPI):
 
     def text_editor_tool_param(
         self, tool: ToolInfo
-    ) -> Optional[ToolTextEditor20250124Param]:
+    ) -> ToolTextEditor20250124Param | BetaToolTextEditor20241022Param | None:
         # check for compatible 'text editor' tool
         if tool.name == "text_editor" and (
             sorted(tool.parameters.properties.keys())
@@ -561,20 +585,16 @@ class AnthropicAPI(ModelAPI):
                 ]
             )
         ):
-            return ToolTextEditor20250124Param(
-                type="text_editor_20250124", name="str_replace_editor"
+            return (
+                BetaToolTextEditor20241022Param(
+                    type="text_editor_20241022", name="str_replace_editor"
+                )
+                if self.is_claude_3_5()
+                else ToolTextEditor20250124Param(
+                    type="text_editor_20250124", name="str_replace_editor"
+                )
             )
         # not a text_editor tool
-        else:
-            return None
-
-    def bash_tool_param(self, tool: ToolInfo) -> Optional[ToolBash20250124Param]:
-        # check for compatible 'bash' tool
-        if tool.name == "bash_session" and (
-            sorted(tool.parameters.properties.keys()) == sorted(["command", "restart"])
-        ):
-            return ToolBash20250124Param(type="bash_20250124", name="bash")
-        # not a bash tool
         else:
             return None
 
@@ -584,7 +604,7 @@ ToolParamDef = (
     ToolParam
     | BetaToolComputerUse20250124Param
     | ToolTextEditor20250124Param
-    | ToolBash20250124Param
+    | BetaToolTextEditor20241022Param
 )
 
 
@@ -593,7 +613,7 @@ def add_cache_control(
     | ToolParam
     | BetaToolComputerUse20250124Param
     | ToolTextEditor20250124Param
-    | ToolBash20250124Param
+    | BetaToolTextEditor20241022Param
     | dict[str, Any],
 ) -> None:
     cast(dict[str, Any], param)["cache_control"] = {"type": "ephemeral"}
@@ -858,6 +878,7 @@ def _names_for_tool_call(
     """
     mappings = (
         (INTERNAL_COMPUTER_TOOL_NAME, "computer_20250124", "computer"),
+        ("str_replace_editor", "text_editor_20241022", "text_editor"),
         ("str_replace_editor", "text_editor_20250124", "text_editor"),
         ("bash", "bash_20250124", "bash_session"),
     )
@@ -944,9 +965,15 @@ async def count_tokens(
             messages=[{"role": "user", "content": text}],
         )
         return response.input_tokens
-    except Exception as e:
-        logger.warning(
-            f"Error counting tokens (falling back to estimated tokens): {str(e)}"
+    except Exception as ex:
+        warn_once(
+            logger,
+            f"Unable to call count_tokens API for model {model} (falling back to estimated tokens)",
+        )
+        trace_message(
+            logger,
+            "Anthropic",
+            f"Unable to call count_tokens API for model {model} ({ex})",
         )
         words = text.split()
         estimated_tokens = int(len(words) * 1.3)

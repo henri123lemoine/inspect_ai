@@ -5,16 +5,17 @@ from typing import TextIO
 import anyio
 from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp import JSONRPCRequest, StdioServerParameters
+from mcp.shared.message import SessionMessage
 from mcp.types import JSONRPCMessage, JSONRPCNotification
 
 from inspect_ai.tool._tool_support_helpers import (
     exec_model_request,
     exec_notification,
     exec_scalar_request,
-    tool_container_sandbox,
+    tool_support_sandbox,
 )
 
-from ._mcp import MCPServerContext
+from ._context import MCPServerContext
 
 
 # Pardon the type: ignore's here. This code is a modified clone of Anthropic code
@@ -28,18 +29,20 @@ async def sandbox_client(  # type: ignore
     *,
     sandbox_name: str | None = None,
     errlog: TextIO = sys.stderr,
+    timeout: int | None = None,  # default 180 seconds
 ) -> MCPServerContext:  # type: ignore
-    sandbox_environment = await tool_container_sandbox(
+    timeout = timeout or 180
+    (sandbox_environment, _) = await tool_support_sandbox(
         "mcp support", sandbox_name=sandbox_name
     )
 
     # read_stream is remote process's stdout
-    read_stream: MemoryObjectReceiveStream[JSONRPCMessage | Exception]
-    read_stream_writer: MemoryObjectSendStream[JSONRPCMessage | Exception]
+    read_stream: MemoryObjectReceiveStream[SessionMessage | Exception]
+    read_stream_writer: MemoryObjectSendStream[SessionMessage | Exception]
 
     # write_stream is remote process's stdin
-    write_stream: MemoryObjectSendStream[JSONRPCMessage]
-    write_stream_reader: MemoryObjectReceiveStream[JSONRPCMessage]
+    write_stream: MemoryObjectSendStream[SessionMessage]
+    write_stream_reader: MemoryObjectReceiveStream[SessionMessage]
 
     read_stream_writer, read_stream = anyio.create_memory_object_stream(0)
     write_stream, write_stream_reader = anyio.create_memory_object_stream(0)
@@ -49,6 +52,7 @@ async def sandbox_client(  # type: ignore
         method="mcp_launch_server",
         params={"server_params": server.model_dump()},
         result_type=int,
+        timeout=timeout,
     )
 
     async def stdout_reader() -> None:
@@ -61,17 +65,20 @@ async def sandbox_client(  # type: ignore
             async with write_stream_reader:
                 # This reads messages until the stream is closed
                 async for message in write_stream_reader:
-                    root = message.root
+                    root = message.message.root
                     if isinstance(root, JSONRPCRequest):
                         await read_stream_writer.send(
-                            await exec_model_request(
-                                sandbox=sandbox_environment,
-                                method="mcp_send_request",
-                                params={
-                                    "session_id": session_id,
-                                    "request": root.model_dump(),
-                                },
-                                result_type=JSONRPCMessage,
+                            SessionMessage(
+                                message=await exec_model_request(
+                                    sandbox=sandbox_environment,
+                                    method="mcp_send_request",
+                                    params={
+                                        "session_id": session_id,
+                                        "request": root.model_dump(),
+                                    },
+                                    result_type=JSONRPCMessage,
+                                    timeout=timeout,
+                                )
                             )
                         )
                     elif isinstance(root, JSONRPCNotification):
@@ -82,6 +89,7 @@ async def sandbox_client(  # type: ignore
                                 "session_id": session_id,
                                 "notification": root.model_dump(),
                             },
+                            timeout=timeout,
                         )
                     else:
                         assert False, f"Unexpected message type {message=}"
@@ -101,4 +109,5 @@ async def sandbox_client(  # type: ignore
                 method="mcp_kill_server",
                 params={"session_id": session_id},
                 result_type=type(None),
+                timeout=timeout,
             )

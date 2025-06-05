@@ -1,13 +1,12 @@
 import contextlib
 import sys
-from contextlib import AsyncExitStack, _AsyncGeneratorContextManager
+from contextlib import AsyncExitStack
 from fnmatch import fnmatch
 from logging import getLogger
 from pathlib import Path
-from typing import Any, AsyncIterator, Callable, Literal, TypeAlias
+from typing import Any, AsyncIterator, Callable, Literal
 
 import anyio
-from anyio.streams.memory import MemoryObjectReceiveStream, MemoryObjectSendStream
 from mcp import McpError
 from mcp.client.session import ClientSession, SamplingFnT
 from mcp.client.sse import sse_client
@@ -15,7 +14,6 @@ from mcp.client.stdio import StdioServerParameters, stdio_client
 from mcp.types import (
     EmbeddedResource,
     ImageContent,
-    JSONRPCMessage,
     TextContent,
     TextResourceContents,
 )
@@ -25,27 +23,20 @@ from typing_extensions import override
 from inspect_ai._util.format import format_function_call
 from inspect_ai._util.trace import trace_action
 from inspect_ai.tool._json_rpc_helpers import exception_for_rpc_response_error
-from inspect_ai.tool._mcp._sandbox import sandbox_client
-from inspect_ai.tool._mcp.sampling import as_inspect_content
 from inspect_ai.tool._tool import Tool, ToolError, ToolResult
 from inspect_ai.tool._tool_def import ToolDef
 from inspect_ai.tool._tool_params import ToolParams
 
+from ._context import MCPServerContext
+from ._sandbox import sandbox_client
 from ._types import MCPServer
-from .sampling import sampling_fn
+from .sampling import as_inspect_content, sampling_fn
 
 # https://github.com/modelcontextprotocol/python-sdk/pull/401
 # https://github.com/modelcontextprotocol/python-sdk/pull/361
 # https://github.com/modelcontextprotocol/python-sdk/pull/289
 
 logger = getLogger(__name__)
-
-MCPServerContext: TypeAlias = _AsyncGeneratorContextManager[
-    tuple[
-        MemoryObjectReceiveStream[JSONRPCMessage | Exception],
-        MemoryObjectSendStream[JSONRPCMessage],
-    ],
-]
 
 
 class MCPServerImpl(MCPServer):
@@ -68,18 +59,19 @@ class MCPServerImpl(MCPServer):
     async def _list_tools(
         self, tools: Literal["all"] | list[str] = "all"
     ) -> list[Tool]:
-        return await self._task_session()._list_tools()
+        return await self._task_session()._list_tools(tools)
 
-    # create a separate MCPServer session per async task
-    _task_sessions: dict[int, "MCPServerSession"] = {}
+    # create a separate MCPServer session per async task / server name
+    _task_sessions: dict[str, "MCPServerSession"] = {}
 
     def _task_session(self) -> "MCPServerSession":
         task_id = anyio.get_current_task().id
-        if task_id not in self._task_sessions:
-            MCPServerImpl._task_sessions[task_id] = MCPServerSession(
+        session_key = f"{task_id}_{self._name}"
+        if session_key not in self._task_sessions:
+            MCPServerImpl._task_sessions[session_key] = MCPServerSession(
                 self._client, name=self._name, events=self._events
             )
-        return MCPServerImpl._task_sessions[task_id]
+        return MCPServerImpl._task_sessions[session_key]
 
 
 class MCPServerSession(MCPServer):
@@ -268,6 +260,7 @@ def create_server_sandbox(
     cwd: str | Path | None = None,
     env: dict[str, str] | None = None,
     sandbox: str | None = None,
+    timeout: int | None = None,
 ) -> MCPServer:
     # TODO: Confirm the lifetime concepts. By the time a request makes it to the
     # sandbox, it's going to need both a session id and a server "name".
@@ -281,6 +274,7 @@ def create_server_sandbox(
                 env=env,
             ),
             sandbox_name=sandbox,
+            timeout=timeout,
         ),
         name=name,
         events=False,

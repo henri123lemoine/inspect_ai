@@ -1,0 +1,52 @@
+---
+title: "inspect_ai.analysis.beta"
+---
+
+::: callout-note
+Analysis functions are currently in beta and are exported from the **inspect_ai.analysis.beta** module. The beta module will be preserved after final release so that code written against it now will continue to work after the beta.
+:::
+
+
+## Evals
+
+### evals_df
+### EvalColumn
+### EvalColumns
+### EvalInfo
+### EvalTask
+### EvalModel
+### EvalConfig
+### EvalResults
+### EvalScores
+
+## Samples
+
+### samples_df
+### SampleColumn
+### SampleSummary
+### SampleMessages
+
+## Messages
+
+### messages_df
+### MessageFilter
+### MessageColumn
+### MessageContent
+### MessageToolCalls
+### MessageColumns
+
+## Events
+
+### events_df
+### EventColumn
+### EventInfo
+### EventTiming
+### ModelEventColumns
+### ToolEventColumns
+
+## Columns
+
+### Column
+### ColumnType
+### ColumnError
+

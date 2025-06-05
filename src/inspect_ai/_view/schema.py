@@ -18,7 +18,7 @@ def sync_view_schema() -> None:
     """
     # export schema file
     schema_path = Path(WWW_DIR, "log-schema.json")
-    types_path = Path(WWW_DIR, "src", "types", "log.d.ts")
+    types_path = Path(WWW_DIR, "src", "@types", "log.d.ts")
     vs_code_types_path = Path(
         WWW_DIR, "..", "..", "..", "..", "tools", "vscode", "src", "@types", "log.d.ts"
     )
@@ -30,6 +30,7 @@ def sync_view_schema() -> None:
         for key in defs.keys():
             defs[key] = schema_to_strict(defs[key])
         f.write(json.dumps(schema, indent=2))
+        f.write("\n")
 
         # generate types w/ json-schema-to-typescript
         subprocess.run(
@@ -44,9 +45,10 @@ def sync_view_schema() -> None:
                 "false",
             ],
             cwd=WWW_DIR,
+            check=True,
         )
 
-        subprocess.run(["yarn", "prettier:write"], cwd=types_path.parent)
+        subprocess.run(["yarn", "prettier:write"], cwd=types_path.parent, check=True)
 
         shutil.copyfile(types_path, vs_code_types_path)
 

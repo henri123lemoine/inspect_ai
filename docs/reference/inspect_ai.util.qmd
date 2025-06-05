@@ -2,13 +2,22 @@
 title: "inspect_ai.util"
 ---
 
-
 ## Store
 
 ### Store
 ### store
 ### store_as
 ### StoreModel
+
+## Limits
+
+### message_limit
+### token_limit
+### time_limit
+### working_limit
+### apply_limits
+### Limit
+### LimitExceededError
 
 ## Concurrency
 
@@ -23,13 +32,10 @@ title: "inspect_ai.util"
 ### DisplayType
 ### input_screen
 
-## Subtasks
-
-### subtask
-### Subtask
-
 ## Utilities
 
+### span
+### collect
 ### resource
 ### throttle
 ### trace_action

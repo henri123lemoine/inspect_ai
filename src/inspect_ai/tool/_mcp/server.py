@@ -73,6 +73,7 @@ def mcp_server_sandbox(
     cwd: str | Path | None = None,
     env: dict[str, str] | None = None,
     sandbox: str | None = None,
+    timeout: int | None = None,
 ) -> MCPServer:
     """MCP Server (Sandbox).
 
@@ -87,6 +88,7 @@ def mcp_server_sandbox(
             "SHELL", "TERM", and "USER" for Posix-based systems).
         cwd: The working directory to use when spawning the process.
         sandbox: The sandbox to use when spawning the process.
+        timeout: Timeout (in seconds) for command.
 
     Returns:
         McpClient: Client for MCP Server
@@ -94,13 +96,13 @@ def mcp_server_sandbox(
     verfify_mcp_package()
     from ._mcp import create_server_sandbox
 
-    return create_server_sandbox(command, args, cwd, env, sandbox)
+    return create_server_sandbox(command, args, cwd, env, sandbox, timeout)
 
 
 def verfify_mcp_package() -> None:
     FEATURE = "MCP tools"
     PACKAGE = "mcp"
-    MIN_VERSION = "1.6.0"
+    MIN_VERSION = "1.8.0"
 
     # verify we have the package
     try:
