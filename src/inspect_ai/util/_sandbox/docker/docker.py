@@ -295,6 +295,12 @@ class DockerSandboxEnvironment(SandboxEnvironment):
         timeout_retry: bool = True,
         concurrency: bool = True,
     ) -> ExecResult[str]:
+        # apply the default timeout for commands that don't specify one
+        # (opt-in via INSPECT_DOCKER_EXEC_DEFAULT_TIMEOUT; commands otherwise
+        # run with no timeout at all)
+        if timeout is None:
+            timeout = default_exec_timeout()
+
         # additional args
         args = []
 
@@ -574,6 +580,13 @@ class DockerSandboxEnvironment(SandboxEnvironment):
         if not path.is_absolute():
             path = Path(self._working_dir) / path
         return path.as_posix()
+
+
+def default_exec_timeout() -> int | None:
+    # set a default timeout (in seconds) for exec() calls that don't specify
+    # one (0 or unset preserves the default behavior of no timeout)
+    timeout = int(os.environ.get("INSPECT_DOCKER_EXEC_DEFAULT_TIMEOUT", 0))
+    return timeout if timeout > 0 else None
 
 
 def _is_directory_alias(file: str) -> bool:
