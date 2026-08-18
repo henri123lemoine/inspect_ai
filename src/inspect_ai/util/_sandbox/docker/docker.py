@@ -217,7 +217,7 @@ class DockerSandboxEnvironment(SandboxEnvironment):
                     working_dir = await container_working_dir(service, project)
 
                     # create the docker sandbox environemnt
-                    docker_env = DockerSandboxEnvironment(service, project, working_dir)
+                    docker_env = cls(service, project, working_dir)
 
                     # save reference to default service if requested
                     if service_info.get("x-default", False):

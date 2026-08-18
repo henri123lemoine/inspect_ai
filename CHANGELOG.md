@@ -1,3 +1,7 @@
+## Unreleased
+
+- Sandbox: `DockerSandboxEnvironment.sample_init()` now constructs environments via `cls()`, so subclass providers that inherit it receive instances of their own class.
+
 ## 0.3.255 (09 August 2026)
 
 - Sandbox Agent Bridge: Agents can no longer reach the web via provider web search, code execution, or remote MCP unless the eval grants it.
