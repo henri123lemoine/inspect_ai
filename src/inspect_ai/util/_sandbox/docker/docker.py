@@ -11,6 +11,7 @@ from logging import getLogger
 from pathlib import Path, PurePosixPath
 from typing import Literal, NamedTuple, Union, overload
 
+import anyio
 from typing_extensions import override
 
 from inspect_ai._util.error import PrerequisiteError
@@ -56,6 +57,8 @@ from .util import ComposeProject, task_project_name
 logger = getLogger(__name__)
 
 _READ_FILE_STAGING_CANARY_BYTES = 32
+
+STARTUP_RETRY_DELAY_SECONDS = 5
 
 
 @sandboxenv(name="docker")
@@ -195,18 +198,34 @@ class DockerSandboxEnvironment(SandboxEnvironment):
             # enumerate the services that will be created
             services = await compose_services(project)
 
-            # start the services
-            result = await compose_up(project, services)
+            # start the services (retrying transient failures if configured
+            # via INSPECT_DOCKER_STARTUP_RETRIES, which defaults to 0)
+            startup_retries = int(os.environ.get("INSPECT_DOCKER_STARTUP_RETRIES", 0))
+            for attempt in range(startup_retries + 1):
+                try:
+                    # start the services
+                    result = await compose_up(project, services)
 
-            # check to ensure that the services are running
-            running_services = await compose_check_running(
-                list(services.keys()), project=project
-            )
+                    # check to ensure that the services are running
+                    running_services = await compose_check_running(
+                        list(services.keys()), project=project
+                    )
 
-            if not running_services:
-                raise RuntimeError(
-                    f"No services started.\nCompose up stderr: {result.stderr}"
-                )
+                    if not running_services:
+                        raise RuntimeError(
+                            f"No services started.\nCompose up stderr: {result.stderr}"
+                        )
+
+                    break
+                except (RuntimeError, TimeoutError) as ex:
+                    if attempt == startup_retries:
+                        raise
+                    logger.warning(
+                        f"Docker services failed to start (attempt {attempt + 1} of "
+                        + f"{startup_retries + 1}, retrying in "
+                        + f"{STARTUP_RETRY_DELAY_SECONDS} seconds): {ex}"
+                    )
+                    await anyio.sleep(STARTUP_RETRY_DELAY_SECONDS)
 
             # create sandbox environments for all running services
             default_service: str | None = None
