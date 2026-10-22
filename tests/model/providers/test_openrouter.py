@@ -772,3 +772,22 @@ async def test_openrouter_responses_api_does_not_send_explicit_cache_fields(
         if isinstance(content, list):
             for block in content:
                 assert "prompt_cache_breakpoint" not in block
+
+
+# -- Strict tool schemas -------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model_args,strict", [({}, False), ({"strict_tools": True}, True)]
+)
+def test_openrouter_strict_tools_off_by_default(
+    model_args: dict[str, Any], strict: bool
+) -> None:
+    """OpenAI and Azure reject strict schemas with defaulted parameters, so strict is opt-in."""
+    from inspect_ai.tool import ToolInfo
+
+    api = _make_api("openai/gpt-5-nano", **model_args)
+
+    tools = api.tools_to_openai([ToolInfo(name="lookup", description="Look it up.")])
+
+    assert tools[0]["function"]["strict"] is strict

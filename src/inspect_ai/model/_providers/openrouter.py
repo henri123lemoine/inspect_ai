@@ -89,6 +89,10 @@ class OpenRouterAPI(OpenAICompatibleAPI):
     OpenRouter across Anthropic-direct, Bedrock, and Vertex routing. Set
     `cache_prompt=False` in `GenerateConfig` to disable. Cache writes returned
     by the upstream provider are surfaced as `ModelUsage.input_tokens_cache_write`.
+
+    Tool schemas are sent with `strict: false` by default: OpenAI and Azure
+    reject strict schemas that leave defaulted parameters out of `required`,
+    as Inspect's tool schemas do. Pass `strict_tools=True` to send them strict.
     """
 
     def __init__(
@@ -98,6 +102,7 @@ class OpenRouterAPI(OpenAICompatibleAPI):
         api_key: str | None = None,
         config: GenerateConfig = GenerateConfig(),
         emulate_tools: bool = False,
+        strict_tools: bool = False,
         **model_args: Any,
     ) -> None:
         # collect known model args that we forward to generate
@@ -140,6 +145,7 @@ class OpenRouterAPI(OpenAICompatibleAPI):
             service="OpenRouter",
             service_base_url="https://openrouter.ai/api/v1",
             emulate_tools=emulate_tools,
+            strict_tools=strict_tools,
             **model_args,
         )
 
