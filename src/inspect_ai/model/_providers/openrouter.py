@@ -32,7 +32,12 @@ from inspect_ai.tool._tool_info import ToolInfo
 
 from .._generate_config import GenerateConfig
 from .openai_compatible import OpenAICompatibleAPI
-from .util import sample_cache_affinity_key
+from .util import (
+    forced_tool_choice_degraded_metadata,
+    is_forced_tool_choice,
+    rejects_forced_tool_choice,
+    sample_cache_affinity_key,
+)
 
 OPENROUTER_API_KEY = "OPENROUTER_API_KEY"
 
@@ -303,12 +308,35 @@ class OpenRouterAPI(OpenAICompatibleAPI):
         # Delegate to the OpenAI-compatible base and post-process usage to
         # surface Anthropic-style cache_creation_input_tokens (which OpenRouter
         # passes through for Anthropic-routed models but the base does not parse).
-        result = await super().generate(input, tools, tool_choice, config)
-        if isinstance(result, tuple):
-            output, call = result
-            if isinstance(output, ModelOutput):
-                _apply_cache_creation_usage(output, call)
+        # Tool emulation sends no tool_choice, so there is nothing to degrade.
+        resolved_choice = (
+            self.resolved_tool_choice(tool_choice)
+            if tools and not self.emulate_tools
+            else tool_choice
+        )
+        result = await super().generate(input, tools, resolved_choice, config)
+        output, call = result if isinstance(result, tuple) else (result, None)
+        if isinstance(output, ModelOutput):
+            _apply_cache_creation_usage(output, call)
+            if resolved_choice != tool_choice:
+                output.metadata = (
+                    output.metadata or {}
+                ) | forced_tool_choice_degraded_metadata(tool_choice)
         return result
+
+    def resolved_tool_choice(self, tool_choice: ToolChoice) -> ToolChoice:
+        """Mirrors `resolved_tool_choice` in the native anthropic provider."""
+        if is_forced_tool_choice(tool_choice) and rejects_forced_tool_choice(
+            self.model_family()
+        ):
+            warn_once(
+                logger,
+                f"openrouter model '{self.model_name}' does not support forced "
+                "tool choice (tool_choice 'any' or a specific tool returns a "
+                "400 error); using tool_choice 'auto' instead.",
+            )
+            return "auto"
+        return tool_choice
 
     @override
     async def _generate_completion(

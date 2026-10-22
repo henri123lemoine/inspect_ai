@@ -13,6 +13,9 @@ from inspect_ai.model._providers.openrouter import (
     _add_anthropic_cache_markers,
     _apply_cache_creation_usage,
 )
+from inspect_ai.model._providers.util import forced_tool_choice_degraded_metadata
+from inspect_ai.tool import ToolChoice, ToolFunction, ToolInfo, ToolParams
+from inspect_ai.util import json_schema
 
 EPHEMERAL: dict[str, str] = {"type": "ephemeral"}
 
@@ -292,6 +295,78 @@ def test_apply_cache_creation_usage_noop_when_no_call() -> None:
     assert output.usage is not None
     assert output.usage.input_tokens_cache_write is None
     assert output.usage.input_tokens == 500
+
+
+# -- Forced tool choice --------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model,tool_choice,sent,degraded",
+    [
+        ("anthropic/claude-sonnet-5.5", "any", "auto", True),
+        ("anthropic/claude-opus-5.5", ToolFunction(name="lookup"), "auto", True),
+        ("anthropic/claude-fable-5.1", "any", "auto", True),
+        ("anthropic/claude-sonnet-5.5", "auto", "auto", False),
+        ("anthropic/claude-sonnet-5", "any", "required", False),
+        ("anthropic/claude-haiku-5.5", "any", "required", False),
+    ],
+)
+async def test_openrouter_forced_tool_choice_degraded(
+    monkeypatch: pytest.MonkeyPatch,
+    model: str,
+    tool_choice: ToolChoice,
+    sent: str,
+    degraded: bool,
+) -> None:
+    """Models that reject forced tool choice are sent `auto`, recorded in the output metadata."""
+    from unittest.mock import AsyncMock
+
+    from openai.types.chat import ChatCompletion, ChatCompletionMessage
+    from openai.types.chat.chat_completion import Choice
+
+    from inspect_ai.model._chat_message import ChatMessageUser
+
+    api = _make_api(model)
+    create = AsyncMock(
+        return_value=ChatCompletion(
+            id="gen-test",
+            model=model,
+            created=0,
+            object="chat.completion",
+            choices=[
+                Choice(
+                    index=0,
+                    finish_reason="stop",
+                    message=ChatCompletionMessage(role="assistant", content="ok"),
+                )
+            ],
+        )
+    )
+    monkeypatch.setattr(api.client.chat.completions, "create", create)
+    tool = ToolInfo(
+        name="lookup",
+        description="Look something up.",
+        parameters=ToolParams(
+            properties={"query": json_schema(str)}, required=["query"]
+        ),
+    )
+    try:
+        result = await api.generate(
+            input=[ChatMessageUser(content="hi")],
+            tools=[tool],
+            tool_choice=tool_choice,
+            config=GenerateConfig(),
+        )
+    finally:
+        await api.aclose()
+
+    assert create.call_args.kwargs["tool_choice"] == sent
+    output = result[0] if isinstance(result, tuple) else result
+    assert isinstance(output, ModelOutput)
+    if degraded:
+        assert output.metadata == forced_tool_choice_degraded_metadata(tool_choice)
+    else:
+        assert output.metadata is None
 
 
 @pytest.mark.anyio
